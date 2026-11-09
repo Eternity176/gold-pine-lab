@@ -1,0 +1,67 @@
+//@version=6
+// ============================================================================
+//  R7 — EMA(12) of Williams %R(34) | GOLD XAUUSD M1
+//  Reference variant (parity vs lab Python):
+//    arm LEVEL (EMA > -20 armed SELL, EMA < -80 armed BUY)
+//    trigger %R crosses EMA | no filters
+//    SL = 1.0 x ATR(14) from signal close | TP = 2.0R from signal close
+//    Risk 1% / trade, size clip [1, 500] oz, max hold 1440 bars
+//    NFP blackout: first Friday of month, 13:00-13:59 UTC (±30' of 13:30 release)
+//    NO trailing — SL fixed at entry. Commission $0.11/oz RT = $0.055/side.
+//  Margin 1% (margin_long/short=1): qty x price must fit equity, else the
+//  broker rejects the order (PineTS verified: qty 10oz on $10k = 0 fills).
+//  One position at a time (entry only when flat).
+// ============================================================================
+strategy("R7 EMA12(%R34) ref", overlay=true, initial_capital=10000,
+  currency=currency.USD, default_qty_type=strategy.fixed, default_qty_value=1,
+  commission_type=strategy.commission.cash_per_contract, commission_value=0.055,
+  slippage=0, pyramiding=1, margin_long=1, margin_short=1,
+  process_orders_on_close=false, calc_on_every_tick=false)
+
+wprLen  = input.int(34, "Williams %R length", minval=2)
+emaLen  = input.int(12, "EMA length of %R", minval=2)
+upper   = input.float(-20.0, "Upper level (arm SELL)")
+lower   = input.float(-80.0, "Lower level (arm BUY)")
+slAtr   = input.float(1.0, "SL = x ATR(14)", minval=0.1, step=0.1)
+tpR     = input.float(2.0, "TP = x R", minval=0.5, step=0.5)
+riskPct = input.float(1.0, "Risk % per trade", minval=0.1, step=0.1)
+maxHold = input.int(1440, "Max hold (bars)", minval=1)
+
+w  = ta.wpr(wprLen)   // NOTE: ta.wpr takes length ONLY (no source arg) — ta.wpr(close, n) silently misreads close as length in PineTS
+ew = ta.ema(w, emaLen)
+a  = ta.atr(14)
+
+plot(ew, "EMA(%R)", color=color.orange)
+hline(upper, "Upper", color=color.red)
+hline(lower, "Lower", color=color.green)
+
+// NFP: first Friday of the month, 13:00-13:59 UTC (data timezone is UTC)
+isNFP = dayofweek == dayofweek.friday and dayofmonth <= 7 and hour == 13
+
+armedSell = ew > upper
+armedBuy  = ew < lower
+longTrig  = ta.crossover(w, ew)
+shortTrig = ta.crossunder(w, ew)
+
+var int entryBar = na
+
+if strategy.position_size == 0
+    entryBar := na
+    if not isNFP and armedBuy and longTrig and not na(a)
+        sl   = close - slAtr * a
+        dist = math.abs(close - sl)
+        qty  = math.max(1, math.min(500, strategy.equity * riskPct / 100 / dist))
+        strategy.entry("L", strategy.long, qty=qty)
+        strategy.exit("XL", from_entry="L", limit=close + tpR * dist, stop=sl)
+    if not isNFP and armedSell and shortTrig and not na(a)
+        sl   = close + slAtr * a
+        dist = math.abs(close - sl)
+        qty  = math.max(1, math.min(500, strategy.equity * riskPct / 100 / dist))
+        strategy.entry("S", strategy.short, qty=qty)
+        strategy.exit("XS", from_entry="S", limit=close - tpR * dist, stop=sl)
+
+if strategy.position_size != 0
+    if na(entryBar)
+        entryBar := bar_index
+    else if bar_index - entryBar >= maxHold
+        strategy.close_all("MAXHOLD")
