@@ -407,7 +407,8 @@
         chart.draw();
       };
     });
-    // Live = PAXG 1m candles (4-feed chain, auto-refresh 15s while ON).
+    // Live = real XAUUSD 1m candles (Dukascopy spot via /api/live proxy,
+    // Yahoo GC=F futures as fallback — auto-refresh 15s while ON).
     // Keeps the current Pine result — plots are time-matched, so new bars
     // just extend the chart. Spot XAU chip comes from gold-api.com.
     $('liveBtn').onclick = async () => {
@@ -420,7 +421,7 @@
     };
     async function doLiveUpdate() {
       if (!state.m1) return;
-      setStatus('Live: fetching PAXG candles…');
+      setStatus('Live: fetching XAU/USD candles…');
       const res = await GoldData.liveUpdate(state.m1, (m) => setStatus(m));
       if (res.ok) state.m1 = res.data;
       updateSpotChip(res);
@@ -438,11 +439,11 @@
       const el = $('spotChip');
       if (!el) return;
       const lastClose = state.m1 ? state.m1.close[state.m1.n - 1] : null;
-      if (res && res.spot) el.textContent = `XAU $${res.spot.price.toFixed(2)} · PAXG live (${res.feed || '—'})`;
-      else if (res && res.ok) el.textContent = `PAXG $${lastClose.toFixed(2)} · live (${res.feed})`;
+      if (res && res.spot) el.textContent = `XAU $${res.spot.price.toFixed(2)} · live (${res.feed || '—'})`;
+      else if (res && res.ok) el.textContent = `XAU $${lastClose.toFixed(2)} · live (${res.feed})`;
       else if (res && res.diag && res.diag.length) el.textContent = 'Live failed: ' + res.diag.map((d) => d.feed + ' ' + (d.ok ? 'ok' : d.error)).join(' · ');
       else el.textContent = 'Live unavailable';
-      el.title = 'Live candles are PAXG (gold-backed token) — tracks spot with a possible small premium/discount. Spot price via gold-api.com.';
+      el.title = 'Live candles are real XAU/USD (Dukascopy spot; Yahoo GC=F gold futures when Dukascopy is down — futures trade a few dollars above spot). Spot price via gold-api.com.' + (res && res.basisNote ? ' ' + res.basisNote : '');
     }
     $('csvInput').onchange = async (e) => {
       const f = e.target.files[0];
