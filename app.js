@@ -15,6 +15,8 @@
 
   let chart = null;
   let worker = null;
+  let lastRunCode = null; // editor content of the last run (auto live re-runs only when unchanged)
+  let autoLiveRun = false; // true while a live-triggered preview re-run is in flight
 
   const PREVIEW_BARS = 20000;
 
@@ -208,6 +210,7 @@
       const msg = e.data;
       if (msg.type === 'progress') { setStatus(msg.msg + runElapsed()); return; }
       if (msg.type === 'error') {
+        autoLiveRun = false;
         stopRunUI();
         showConsoleError(msg.message, msg.line);
         setStatus('Error — see console below editor');
@@ -216,6 +219,22 @@
       if (msg.type === 'result') {
         stopRunUI();
         msg.preview = state.pendingPreview;
+        if (autoLiveRun) {
+          // Auto re-run for live bars: refresh ONLY the plots so the Pine
+          // pane follows live data. The old Tester numbers (strategy,
+          // equity, IS/OS gates, trades) are kept — a preview re-run must
+          // never clobber a full-history result.
+          autoLiveRun = false;
+          const prev = state.result;
+          state.result = prev
+            ? { ...prev, plots: msg.plots, plotMeta: msg.plotMeta, labels: msg.labels, lines: msg.lines, boxes: msg.boxes, tables: msg.tables }
+            : msg;
+          hideConsoleError();
+          refreshChart(true);
+          renderTester(state.result);
+          setStatus(`Live: Pine plots updated to live bars (${fmtInt(msg.bars)} bars).`);
+          return;
+        }
         state.result = msg;
         hideConsoleError();
         refreshChart();
@@ -224,6 +243,7 @@
       }
     };
     worker.onerror = (e) => {
+      autoLiveRun = false;
       stopRunUI();
       showConsoleError('Worker error: ' + (e.message || e.filename || 'unknown'));
     };
@@ -248,6 +268,7 @@
   }
   function cancelRun() {
     if (worker) { worker.terminate(); worker = null; }
+    autoLiveRun = false;
     stopRunUI();
     setStatus('Cancelled — press Run to try again.');
   }
@@ -277,6 +298,7 @@
   }
   function sendRun(code, candles) {
     const w = getWorker();
+    lastRunCode = code;
     startRunUI();
     setStatus('Running Pine…');
     // Transfer buffers (copies are fine; worker rebuilds candle objects).
@@ -571,6 +593,17 @@
       updateSpotChip(res);
       setDataStatus();
       refreshChart(true); // live must not snap the zoom/pan back to 300 bars
+      // Pine plots only cover the bars of the last run — without this, the
+      // Pine pane goes empty as soon as the view moves onto live bars.
+      // Re-run the preview when: a result exists, the script is unchanged
+      // since that run, nothing is already running, and the user is looking
+      // at the live edge. Tester numbers are never replaced (see the result
+      // handler's autoLiveRun branch).
+      if (!state.running && !autoLiveRun && state.result && $('editor').value === lastRunCode
+          && chart && chart.endIdx >= state.candles.n - 5) {
+        autoLiveRun = true;
+        runScript(false);
+      }
     }
     function stopLive() {
       state.liveOn = false;
