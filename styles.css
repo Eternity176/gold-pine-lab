@@ -1,0 +1,101 @@
+/* Gold Pine Lab — TradingView-like dark theme */
+:root {
+  --bg: #131722; --panel: #1e222d; --panel2: #2a2e39; --border: #363c4e;
+  --text: #d1d4dc; --muted: #b2b5be; --dim: #787b86;
+  --accent: #2962ff; --up: #089981; --down: #f23645;
+  --green-vivid: #00e676; --red-vivid: #ff1744;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; overflow: hidden; }
+body {
+  background: var(--bg); color: var(--text);
+  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  display: flex; flex-direction: column;
+}
+button { font: inherit; color: var(--text); background: var(--panel2); border: 1px solid var(--border); border-radius: 4px; padding: 5px 10px; cursor: pointer; }
+button:hover { background: #363c4e; }
+button:disabled { opacity: 0.45; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+button.primary:hover { background: #1e53e5; }
+button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+input, select, textarea { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 4px; padding: 5px 8px; }
+input:focus, select:focus, textarea:focus { outline: 1px solid var(--accent); }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+.pos { color: var(--up); } .neg { color: var(--down); }
+.pass { color: var(--up); font-weight: 600; } .fail { color: var(--down); font-weight: 600; }
+
+/* ---- top bar ---- */
+#topbar { display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 10px; background: var(--panel); border-bottom: 1px solid var(--border); flex: 0 0 auto; }
+#topbar .logo { font-weight: 700; font-size: 15px; color: #fff; white-space: nowrap; }
+#topbar .logo span { color: var(--accent); }
+#topbar .sym { font-weight: 600; color: #fff; padding: 5px 8px; border-radius: 4px; background: var(--panel2); }
+#topbar .sep { width: 1px; height: 22px; background: var(--border); }
+#topbar .tf-group { display: flex; gap: 2px; }
+#topbar .tf-group button, #topbar .ctype-group button { padding: 4px 8px; background: transparent; border-color: transparent; color: var(--muted); }
+#topbar .tf-group button.active, #topbar .ctype-group button.active { background: var(--accent); color: #fff; }
+#topbar .spacer { flex: 1; }
+#topbar .spot { color: var(--muted); font-size: 12px; white-space: nowrap; padding: 5px 8px; border-radius: 4px; background: var(--panel2); font-variant-numeric: tabular-nums; }
+#liveBtn.live-on { background: var(--up); border-color: var(--up); color: #fff; font-weight: 600; }
+#topbar .status { color: var(--dim); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 420px; }
+
+/* ---- middle ---- */
+#middle { flex: 1 1 auto; display: flex; min-height: 0; }
+#toolbar { width: 44px; background: var(--panel); border-right: 1px solid var(--border); display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 8px 0; flex: 0 0 auto; }
+#toolbar button { width: 32px; height: 32px; padding: 0; font-size: 15px; background: transparent; border-color: transparent; }
+#toolbar button:hover { background: var(--panel2); }
+#chartArea { flex: 1; display: flex; flex-direction: column; min-width: 0; position: relative; }
+#chartWrap { flex: 1 1 auto; position: relative; min-height: 0; }
+#chartMain { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; display: block; }
+#oscWrap { height: 110px; border-top: 1px solid var(--border); position: relative; flex: 0 0 auto; }
+#chartOsc { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+#tableOverlay { position: absolute; inset: 0; pointer-events: none; }
+.pine-table { position: absolute; pointer-events: auto; }
+.pine-table table { border-collapse: collapse; font-size: 12px; background: var(--panel); border: 1px solid var(--border); }
+.pine-table td { padding: 4px 10px; border: 1px solid var(--border); white-space: nowrap; }
+#dataStatus { position: absolute; left: 8px; bottom: 6px; z-index: 5; font-size: 11px; color: var(--dim); background: rgba(19, 23, 34, 0.85); padding: 2px 6px; border-radius: 3px; pointer-events: none; }
+#barCount { position: absolute; right: 70px; top: 6px; z-index: 5; font-size: 11px; color: var(--dim); background: rgba(19, 23, 34, 0.85); padding: 2px 6px; border-radius: 3px; pointer-events: none; }
+
+/* ---- bottom panel ---- */
+#bottom { height: 38vh; min-height: 260px; border-top: 1px solid var(--border); background: var(--panel); display: flex; flex-direction: column; flex: 0 0 auto; }
+#bottomTabs { display: flex; gap: 2px; padding: 0 8px; border-bottom: 1px solid var(--border); flex: 0 0 auto; }
+#bottomTabs button { background: transparent; border: none; border-bottom: 2px solid transparent; border-radius: 0; padding: 9px 14px; color: var(--muted); font-weight: 600; }
+#bottomTabs button.active { color: #fff; border-bottom-color: var(--accent); }
+#bottomTabs .tab-right { margin-left: auto; display: flex; align-items: center; gap: 6px; padding: 4px 0; }
+.tab-pane { flex: 1; min-height: 0; overflow: auto; display: none; padding: 10px 12px; }
+.tab-pane.active { display: block; }
+
+/* editor */
+#tab-editor { flex-direction: column; }
+#tab-editor.active { display: flex; }
+#editorBar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; flex: 0 0 auto; }
+#editorBar label { color: var(--muted); font-size: 12px; }
+#editorBar input[type=number] { width: 90px; }
+#editor { flex: 1; min-height: 0; width: 100%; resize: none; font: 12.5px/1.5 "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; tab-size: 4; white-space: pre; }
+#consoleOut { display: none; margin-top: 8px; padding: 8px 10px; border-radius: 4px; font: 12px/1.5 Consolas, monospace; white-space: pre-wrap; flex: 0 0 auto; max-height: 90px; overflow: auto; }
+#consoleOut.console-err { display: block; background: rgba(242, 54, 69, 0.12); border: 1px solid rgba(242, 54, 69, 0.5); color: #ff8a94; }
+
+/* tester */
+#previewBanner { background: rgba(41, 98, 255, 0.12); border: 1px solid rgba(41, 98, 255, 0.5); color: #bcd0ff; padding: 8px 10px; border-radius: 4px; margin-bottom: 12px; font-size: 12.5px; }
+#testerEmpty { color: var(--dim); padding: 20px; }
+#metricsCards { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.metric-card { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px 14px; min-width: 130px; }
+.metric-label { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.4px; }
+.metric-value { font-size: 18px; font-weight: 700; color: #fff; margin-top: 2px; font-variant-numeric: tabular-nums; }
+#equityCanvas { width: 100%; height: 180px; display: block; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 12px; }
+table.gates, table.trades { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+table.gates th, table.gates td, table.trades th, table.trades td { padding: 6px 10px; border-bottom: 1px solid var(--border); text-align: left; }
+table.gates th, table.trades th { color: var(--dim); font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: 0.4px; }
+table.gates td.gate { text-align: center; }
+.verdict { margin: 10px 0 4px; font-size: 13px; }
+.note { color: var(--dim); font-size: 12px; margin-top: 6px; }
+.pager { display: flex; gap: 8px; align-items: center; margin-top: 8px; color: var(--muted); }
+
+/* help */
+#tab-help h2 { font-size: 14px; color: #fff; margin: 14px 0 6px; }
+#tab-help h2:first-child { margin-top: 0; }
+#tab-help p, #tab-help li { color: var(--muted); font-size: 12.5px; }
+#tab-help ul { padding-left: 18px; }
+#tab-help code { background: var(--bg); border: 1px solid var(--border); border-radius: 3px; padding: 1px 5px; font-size: 12px; color: var(--text); }
+#tab-help table { border-collapse: collapse; margin: 6px 0; font-size: 12.5px; }
+#tab-help td, #tab-help th { border: 1px solid var(--border); padding: 5px 10px; text-align: left; }
+#tab-help th { color: var(--dim); }
