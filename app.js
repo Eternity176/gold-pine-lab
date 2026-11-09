@@ -16,6 +16,7 @@
   let chart = null;
   let worker = null;
   let lastRunCode = null; // editor content of the last run (auto live re-runs only when unchanged)
+  let lastRunN = 0; // full-series bar count at the last run (auto re-run only when new bars arrived)
   let autoLiveRun = false; // true while a live-triggered preview re-run is in flight
 
   const PREVIEW_BARS = 20000;
@@ -299,6 +300,7 @@
   function sendRun(code, candles) {
     const w = getWorker();
     lastRunCode = code;
+    lastRunN = state.candles ? state.candles.n : 0;
     startRunUI();
     setStatus('Running Pine…');
     // Transfer buffers (copies are fine; worker rebuilds candle objects).
@@ -551,6 +553,9 @@
     $('loadSavedBtn').onclick = loadSaved;
     $('resetViewBtn').onclick = () => chart.resetView();
     $('showAllBtn').onclick = () => chart.showAll();
+    $('zoomInBtn').onclick = () => chart.zoomBy(0.8); // around the chart centre
+    $('zoomOutBtn').onclick = () => chart.zoomBy(1.25);
+    $('goLatestBtn').onclick = () => chart.goToLatest();
     $('sampleSel').onchange = (e) => { if (e.target.value) loadSample(e.target.value); e.target.value = ''; };
     $('copyBtn').onclick = () => {
       navigator.clipboard.writeText($('editor').value).then(() => setStatus('Script copied to clipboard.'));
@@ -574,17 +579,19 @@
       };
     });
     // Live = real XAUUSD 1m candles (Dukascopy spot via /api/live proxy,
-    // Yahoo GC=F futures as fallback — auto-refresh 15s while ON).
-    // Keeps the current Pine result — plots are time-matched, so new bars
-    // just extend the chart. Spot XAU chip comes from gold-api.com.
-    $('liveBtn').onclick = async () => {
-      if (state.liveOn) { stopLive(); return; }
+    // Yahoo GC=F futures as fallback). ON by default and auto-refreshing
+    // every 5s — the price runs by itself, no manual refresh. Keeps the
+    // current Pine result — plots are time-matched, so new bars just extend
+    // the chart. Spot XAU chip comes from gold-api.com.
+    async function startLive() {
+      if (state.liveOn) return;
       state.liveOn = true;
       $('liveBtn').textContent = '● Live ON';
       $('liveBtn').classList.add('live-on');
       await doLiveUpdate();
-      state.liveTimer = setInterval(doLiveUpdate, 15000);
-    };
+      state.liveTimer = setInterval(doLiveUpdate, 5000);
+    }
+    $('liveBtn').onclick = async () => { state.liveOn ? stopLive() : startLive(); };
     async function doLiveUpdate() {
       if (!state.m1) return;
       setStatus('Live: fetching XAU/USD candles…');
@@ -596,10 +603,12 @@
       // Pine plots only cover the bars of the last run — without this, the
       // Pine pane goes empty as soon as the view moves onto live bars.
       // Re-run the preview when: a result exists, the script is unchanged
-      // since that run, nothing is already running, and the user is looking
-      // at the live edge. Tester numbers are never replaced (see the result
-      // handler's autoLiveRun branch).
+      // since that run, nothing is already running, NEW bars arrived since
+      // the last run (so the 5s refresh does not re-run Pine pointlessly),
+      // and the user is looking at the live edge. Tester numbers are never
+      // replaced (see the result handler's autoLiveRun branch).
       if (!state.running && !autoLiveRun && state.result && $('editor').value === lastRunCode
+          && state.candles.n > lastRunN
           && chart && chart.endIdx >= state.candles.n - 5) {
         autoLiveRun = true;
         runScript(false);
@@ -663,6 +672,7 @@
       refreshChart();
       setStatus(`Ready · ${fmtInt(state.m1.n)} bars loaded`);
       await loadSample('r7');
+      startLive(); // live is ON by default — price runs realtime, no button press
     } catch (e) {
       showConsoleError('Data load failed: ' + e.message + ' — serve via http.server, not file://');
       setStatus('Data load failed');

@@ -24,7 +24,44 @@
       this.ind = []; // built-in indicator series: [{key,label,overlay,pane,color,style,values,levels}]
       this.endIdx = 0; this.barW = 0; this.viewBars = 300;
       this.mouse = null; this.onHover = null; this.type = 'candles';
+      // Right offset (bars of empty space after the last candle, like
+      // TradingView): the last candle never sits jammed against the price
+      // axis. It is the DEFAULT gap (used by setData/resetView/goToLatest);
+      // the wheel anchor is protected by the much more generous _maxEnd()
+      // cap below, so zooming out at the right edge never breaks the anchor
+      // — with a fixed 10-bar clamp, repeated zoom-outs clamped endIdx to
+      // n-1 and the bar under the cursor walked into the past on every tick.
+      this.rightOffset = 10;
       this._bind();
+    }
+    // Furthest the view's right edge may go: the last bar plus the larger
+    // of the default offset and the whole visible window. For a real-bar
+    // anchor this cap can never engage during a wheel zoom (the unclamped
+    // endIdx exceeds n-1 by at most viewBars), so the anchor holds exactly
+    // for any zoom-out sequence; it only stops the user dragging the chart
+    // into endless empty space.
+    _maxEnd() {
+      return this.candles.n - 1 + Math.max(this.rightOffset, this.viewBars);
+    }
+    // Zoom around a screen fraction (frac 0 = left edge, 1 = right edge).
+    // factor < 1 zooms in, > 1 zooms out. Used by the wheel handler and by
+    // the + / − buttons (which zoom around the chart centre, frac 0.5).
+    zoomBy(factor, frac = 0.5) {
+      if (!this.candles) return;
+      frac = Math.min(1, Math.max(0, frac));
+      const plotW = this.main.clientWidth - 64;
+      const mx = 4 + frac * Math.max(1, plotW);
+      const anchorIdx = this._idxAtX(mx);
+      this.viewBars = Math.max(10, Math.min(20000, Math.round(this.viewBars * factor)));
+      this.endIdx = Math.round(anchorIdx + this.viewBars * (1 - frac) - 0.5);
+      this.endIdx = Math.min(this._maxEnd(), Math.max(this.viewBars - 1, this.endIdx));
+      this.draw();
+    }
+    // Jump to the newest bar, keeping the current zoom level.
+    goToLatest() {
+      if (!this.candles) return;
+      this.endIdx = this.candles.n - 1 + this.rightOffset;
+      this.draw();
     }
     // Built-in indicators (bar-indexed Float64Array values, NaN = no value).
     // Unlike Pine plots (time-keyed points + binary search per point), these
@@ -57,17 +94,13 @@
         // as TradingView and the old code, but the factor now scales with
         // the actual scroll amount.
         const factor = Math.min(2, Math.max(0.5, Math.exp(dy * 0.0016)));
-        const anchorIdx = this._idxAtX(mx);
-        this.viewBars = Math.max(10, Math.min(20000, Math.round(this.viewBars * factor)));
         // Keep the bar under the cursor at the same screen x after zoom.
         // xOf(i) = 4 + (i - start)*barW + barW/2, barW = plotW/viewBars,
         // start = endIdx - viewBars + 1  =>  endIdx = anchorIdx + viewBars*(1-frac) - 0.5
         // (frac in CSS px: clientWidth, NOT canvas device width).
         const plotW = this.main.clientWidth - 64;
         const frac = Math.min(1, Math.max(0, (mx - 4) / Math.max(1, plotW)));
-        this.endIdx = Math.round(anchorIdx + this.viewBars * (1 - frac) - 0.5);
-        this.endIdx = Math.min(this.candles.n - 1, Math.max(this.viewBars - 1, this.endIdx));
-        this.draw();
+        this.zoomBy(factor, frac);
       };
       el.addEventListener('wheel', onWheel, { passive: false });
       if (this.osc) this.osc.addEventListener('wheel', onWheel, { passive: false });
@@ -75,8 +108,11 @@
       window.addEventListener('mousemove', (e) => {
         if (drag && this.candles) {
           const dx = e.clientX - drag.x;
-          const bars = Math.round(dx / Math.max(2, this.barW));
-          this.endIdx = Math.min(this.candles.n - 1, Math.max(this.viewBars - 1, drag.end - bars));
+          // Same fix as _idxAtX: no Math.max(2, barW) — when zoomed out
+          // (barW < 1px) the old clamp made dragging feel stuck (100px
+          // moved 50 bars instead of ~1500). barW || 1 guards pre-draw only.
+          const bars = Math.round(dx / (this.barW || 1));
+          this.endIdx = Math.min(this._maxEnd(), Math.max(this.viewBars - 1, drag.end - bars));
           this.draw();
         }
       });
@@ -96,7 +132,14 @@
     _plotW() { return this.main.width - 64; }
     _idxAtX(x) {
       const start = this.endIdx - this.viewBars + 1;
-      return start + Math.floor((x - 4) / Math.max(1, this.barW));
+      // NOTE: no Math.max(1, barW) here — when zoomed out past ~936 bars,
+      // barW < 1px and clamping the divisor to 1 made _idxAtX return a bar
+      // hundreds of bars left of the cursor; the wheel handler then fed
+      // that wrong anchor into the next zoom and the chart walked into the
+      // past on every tick (the "lăn lùi kéo chart ra tít đằng trước" bug).
+      // barW || 1 only guards the pre-first-draw state (barW = 0).
+      const bw = this.barW || 1;
+      return start + Math.floor((x - 4) / bw);
     }
     _xAtIdx(i) {
       const start = this.endIdx - this.viewBars + 1;
@@ -122,10 +165,14 @@
       }
       if (keep) {
         // Live updates must not snap the view back to the last 300 bars:
-        // stay at the right edge if we were there, else keep the position.
-        this.endIdx = (oldEnd >= oldN - 1) ? candles.n - 1 : Math.min(oldEnd, candles.n - 1);
+        // stay at the right edge if we were there (keeping the user's
+        // right-offset distance from the last bar), else keep the position.
+        const atRight = oldEnd >= oldN - 1;
+        this.endIdx = atRight
+          ? candles.n - 1 + Math.max(0, oldEnd - (oldN - 1))
+          : Math.min(oldEnd, this._maxEnd());
       } else {
-        this.endIdx = candles.n - 1;
+        this.endIdx = candles.n - 1 + this.rightOffset;
         this.viewBars = Math.min(300, candles.n);
       }
       this.draw();
@@ -144,7 +191,7 @@
     }
     resetView() {
       if (!this.candles) return;
-      this.endIdx = this.candles.n - 1;
+      this.endIdx = this.candles.n - 1 + this.rightOffset;
       this.viewBars = Math.min(300, this.candles.n);
       this.draw();
     }
@@ -165,18 +212,19 @@
       const { ctx, w, h } = this._fitCanvas(this.main);
       const plotW = w - 64, plotH = h - 22;
       const start = Math.max(0, this.endIdx - this.viewBars + 1);
-      const end = this.endIdx;
-      this.barW = plotW / Math.max(1, end - start + 1);
+      const end = this.endIdx; // view end — may run past the last bar by rightOffset
       const c = this.candles;
+      const dataEnd = Math.min(end, c.n - 1); // last bar that has data
+      this.barW = plotW / Math.max(1, end - start + 1);
       // price range from visible candles + overlay plots (bar-indexed, so
       // this loop only touches the visible window, never all 1M points)
       let lo = Infinity, hi = -Infinity;
-      for (let i = start; i <= end; i++) { lo = Math.min(lo, c.low[i]); hi = Math.max(hi, c.high[i]); }
+      for (let i = start; i <= dataEnd; i++) { lo = Math.min(lo, c.low[i]); hi = Math.max(hi, c.high[i]); }
       for (const key of Object.keys(this._plotVals || {})) {
         const m = this.plotMeta[key];
         if (m && m.overlay === false) continue;
         const vals = this._plotVals[key];
-        for (let i = start; i <= end; i++) {
+        for (let i = start; i <= dataEnd; i++) {
           const v = vals[i];
           if (typeof v === 'number' && !Number.isNaN(v)) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
         }
@@ -185,7 +233,7 @@
       for (const s of this.ind) {
         if (s.overlay === false) continue;
         const v = s.values;
-        for (let i = start; i <= end; i++) {
+        for (let i = start; i <= dataEnd; i++) {
           const val = v[i];
           if (typeof val === 'number' && !Number.isNaN(val)) { lo = Math.min(lo, val); hi = Math.max(hi, val); }
         }
@@ -206,12 +254,14 @@
         ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(plotW, y); ctx.stroke();
         ctx.fillText(v.toFixed(2), plotW + 6, y + 4);
       }
-      // time grid ( ~8 labels)
+      // time grid ( ~8 labels) — grid lines span the whole view, but labels
+      // only exist for bars with data (never past the last candle).
       const nLab = 8;
       for (let g = 0; g <= nLab; g++) {
         const i = Math.round(start + (end - start) * g / nLab);
         const x = xOf(i);
         ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, plotH); ctx.stroke();
+        if (i > dataEnd) continue;
         const d = new Date(c.times[i] * 60000);
         ctx.fillText(fmtTime(d), x - 24, h - 6);
       }
@@ -219,18 +269,18 @@
       if (this.type === 'line' || this.type === 'area') {
         ctx.strokeStyle = '#2962ff'; ctx.lineWidth = 1.5; ctx.beginPath();
         let started = false;
-        for (let i = start; i <= end; i++) {
+        for (let i = start; i <= dataEnd; i++) {
           const x = xOf(i), y = yOf(c.close[i]);
           if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
         }
         ctx.stroke();
         if (this.type === 'area') {
-          ctx.lineTo(xOf(end), yOf(lo)); ctx.lineTo(xOf(start), yOf(lo)); ctx.closePath();
+          ctx.lineTo(xOf(dataEnd), yOf(lo)); ctx.lineTo(xOf(start), yOf(lo)); ctx.closePath();
           ctx.fillStyle = 'rgba(41,98,255,0.12)'; ctx.fill();
         }
       } else {
       const bw = Math.max(1, Math.min(14, this.barW * 0.7));
-      for (let i = start; i <= end; i++) {
+      for (let i = start; i <= dataEnd; i++) {
         const x = xOf(i), up = c.close[i] >= c.open[i];
         ctx.strokeStyle = ctx.fillStyle = up ? UP : DOWN;
         ctx.beginPath(); ctx.moveTo(x, yOf(c.high[i])); ctx.lineTo(x, yOf(c.low[i])); ctx.stroke();
@@ -267,7 +317,7 @@
         let started = false;
         const vals = this._plotVals[key];
         if (vals) {
-          for (let i = start; i <= end; i++) {
+          for (let i = start; i <= dataEnd; i++) {
             const v = vals[i];
             if (typeof v !== 'number' || Number.isNaN(v)) { started = false; continue; }
             const x = xOf(i), y = yOf(v);
@@ -277,7 +327,7 @@
           for (const p of pts) {
             if (typeof p.v !== 'number' || Number.isNaN(p.v)) { started = false; continue; }
             const bi = this._barIndexOfTime(p.t);
-            if (bi === null || bi < start || bi > end) { started = false; continue; }
+            if (bi === null || bi < start || bi > dataEnd) { started = false; continue; }
             const x = xOf(bi), y = yOf(p.v);
             if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
           }
@@ -289,7 +339,7 @@
         if (s.overlay === false) continue;
         ctx.strokeStyle = s.color || '#2962ff'; ctx.lineWidth = 1.5; ctx.beginPath();
         let started = false;
-        for (let i = start; i <= end; i++) {
+        for (let i = start; i <= dataEnd; i++) {
           const val = s.values[i];
           if (typeof val !== 'number' || Number.isNaN(val)) { started = false; continue; }
           const x = xOf(i), y = yOf(val);
@@ -361,8 +411,9 @@
           ctx.fillStyle = TXT; ctx.fillText(pv.toFixed(2), plotW + 6, my + 4);
         }
       }
-      // OHLC legend
-      const li = Math.min(end, Math.max(start, this.mouse ? this._idxAtX(this.mouse.x) : end));
+      // OHLC legend — hovering the empty right-offset region shows the last
+      // real bar (there is no candle under the cursor there).
+      const li = Math.min(dataEnd, Math.max(start, this.mouse ? this._idxAtX(this.mouse.x) : dataEnd));
       if (li >= 0 && li < c.n) {
         ctx.fillStyle = TXT; ctx.font = '12px -apple-system, "Segoe UI", Roboto, sans-serif';
         const d = new Date(c.times[li] * 60000);
@@ -370,7 +421,7 @@
         ctx.fillStyle = up ? UP : DOWN;
         ctx.fillText(`O ${c.open[li].toFixed(2)}  H ${c.high[li].toFixed(2)}  L ${c.low[li].toFixed(2)}  C ${c.close[li].toFixed(2)}   ${d.toISOString().slice(0, 16).replace('T', ' ')} UTC`, 8, 16);
       }
-      this._drawOsc(start, end);
+      this._drawOsc(start, dataEnd);
     }
     _barIndexOfTime(tMs) {
       // plots carry time in ms; candles carry epoch minutes. Binary search.
