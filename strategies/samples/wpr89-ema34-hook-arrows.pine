@@ -1,0 +1,256 @@
+//@version=6
+// ============================================================
+//  WPR89 + EMA34 Hook Arrows — Mũi tên đỏ / xanh theo quy tắc hook của %R
+//  Dùng trên TradingView để kiểm tra bằng mắt xem điểm vào lệnh có đúng không.
+//  Chỉ vẽ mũi tên, không vào lệnh, không phải EA.
+//
+//  ĐỔI QUY TẮC (user 2026-11-08, "thay vì phá supertrend thì đổi qua
+//  quá cục vàng đỏ"): mũi tên KHÔNG còn vẽ khi phá Supertrend.
+//  Giờ vẽ khi phá CỤC FRACTAL SR (đỏ = kháng cự, vàng = hỗ trợ).
+//  Code Fractal SR lấy nguyên từ fractal-wpr-v1.pine (đã verify) /
+//  FractalSR_Dots_MT5.mq5 (code gốc của user).
+//
+//  QUY TẮC MŨI TÊN ĐỎ (SELL):
+//    1. %R(89) trước đó ở trên mức -5
+//    2. %R(89) cắt xuống dưới EMA(34) của %R(89)
+//       VÀ BB bị phá xuống (close dưới band dưới) — chỉ cần phá là được.
+//    3. %R(89) đi thẳng lên, cắt lên trên mức -5
+//    4. Giá ĐÓNG CỬA dưới cục VÀNG (hỗ trợ = swing low 5-5 đang active)
+//       -> vẽ mũi tên đỏ trên đỉnh nến đó
+//    HỦY CHỜ: EMA < -60 thì bỏ.
+//
+//  QUY TẮC MŨI TÊN XANH (BUY) — ngược lại:
+//    1. %R(89) trước đó ở dưới mức -95
+//    2. %R(89) cắt lên trên EMA(34) của %R(89)
+//       VÀ BB bị phá lên (close trên band trên)
+//    3. %R(89) đi thẳng xuống, cắt xuống dưới mức -95
+//    4. Giá ĐÓNG CỬA trên cục ĐỎ (kháng cự = swing high 5-5 đang active)
+//       -> vẽ mũi tên xanh dưới đáy nến đó
+//    HỦY CHỜ: EMA > -40 thì bỏ.
+//
+//  CỤC FRACTAL SR (như file gốc FractalSR_Dots_MT5.mq5):
+//  - Đỏ = kháng cự = swing high 5-5 (cao nhất 11 nến; trái cho bằng,
+//    phải phải thấp hơn hẳn). Chốt sau 5 nến phải.
+//  - Vàng = hỗ trợ = swing low 5-5 (thấp nhất 11 nến). Chốt sau 5 nến phải.
+//  - Filter cùng chân CHỈ ở đỏ: trong cùng 1 chân tăng (chưa có swing low
+//    mới), chỉ nhận đỉnh cao hơn đỉnh đang active.
+//  - Phá = ĐÓNG CỬA qua mức (close > đỏ / close < vàng), như phương pháp
+//    của user ("price closes above red"). Mức bị xóa từ nến sau khi râu
+//    phá qua (high > đỏ / low < vàng).
+//  - Đường Supertrend vẫn vẽ (tắt được bằng showST) nhưng mũi tên KHÔNG
+//    còn dùng nó nữa.
+//  - Mũi tên xác nhận khi nến đóng (không repaint sau khi nến đã đóng).
+//  - Muốn xem đường %R và EMA thì mở thêm file wpr89-ema34-oscillator.pine
+//    ở pane dưới.
+// ============================================================
+indicator("WPR89 EMA34 Hook Arrows", shorttitle="WPR Hook Arrows", overlay=true)
+
+// ---------- Inputs ----------
+wprLen           = input.int(89,    "Williams %R length", minval=1)
+emaLen           = input.int(34,    "EMA of %R length",   minval=1)
+bbLen            = input.int(30,    "Bollinger length",   minval=1)
+bbDev            = input.float(2.0, "Bollinger deviation", step=0.1)
+stAtrLen         = input.int(14,    "Supertrend ATR length", minval=1)
+stFactor         = input.float(3.0, "Supertrend factor", step=0.1)
+obLevel          = input.float(-5,  "Overbought level (-5)", step=0.5)
+osLevel          = input.float(-95, "Oversold level (-95)",  step=0.5)
+redCancelLevel   = input.float(-60, "Red cancel: EMA below this cancels wait", step=1)
+greenCancelLevel = input.float(-40, "Green cancel: EMA above this cancels wait", step=1)
+leftBars         = input.int(5,  "Fractal left bars", minval=1)
+rightBars        = input.int(5,  "Fractal right bars", minval=1)
+filterSameLeg    = input.bool(true, "Filter lower highs cùng chân (như .mq5)")
+showBB           = input.bool(true, "Show Bollinger Bands on chart")
+showST           = input.bool(true, "Show Supertrend on chart (chi de xem, mui ten khong dung)")
+showFractal      = input.bool(true, "Show Fractal SR dots (đỏ/vàng)")
+showDebug        = input.bool(true, "Show hook / level-cross / cancel markers (debug)")
+
+// ---------- Williams %R + EMA + Bollinger + Supertrend ----------
+wpr = ta.wpr(wprLen)        // -100 .. 0
+ema = ta.ema(wpr, emaLen)
+[bbMid, bbUpper, bbLower] = ta.bb(close, bbLen, bbDev)
+[st, stDir] = ta.supertrend(stFactor, stAtrLen)
+// Supertrend chi de xem (display-only). Mui ten khong dung no nua.
+
+// Vẽ BB + Supertrend lên chart giá
+plot(showBB ? bbUpper : na, "BB Upper", color=color.new(color.gray, 50))
+plot(showBB ? bbMid   : na, "BB Basis", color=color.new(color.gray, 70))
+plot(showBB ? bbLower : na, "BB Lower", color=color.new(color.gray, 50))
+plot(showST ? st : na, "Supertrend", color=close > st ? color.new(color.green, 0) : color.new(color.red, 0), linewidth=2)
+
+// ---------- Fractal SR (port từ fractal-wpr-v1.pine, logic gốc FractalSR_Dots_MT5.mq5) ----------
+ph = ta.pivothigh(high, leftBars, rightBars)   // giá đỉnh swing khi được chốt (sau rightBars nến)
+pl = ta.pivotlow(low, leftBars, rightBars)     // giá đáy swing khi được chốt
+
+var float activeRes = na
+var float activeSup = na
+var int lastPeakBar = na
+var int lastTroughBar = na
+
+if not na(ph)
+    adopt = true
+    if filterSameLeg and not na(activeRes) and (na(lastTroughBar) or lastTroughBar <= lastPeakBar) and ph < activeRes
+        adopt := false
+    if adopt
+        activeRes := ph
+        lastPeakBar := bar_index
+
+if not na(pl)
+    activeSup := pl
+    lastTroughBar := bar_index
+
+// Phá = close qua mức (như v1): close > đỏ = phá lên, close < vàng = phá xuống.
+// Dùng mức TRƯỚC khi xóa. Điều kiện [1] na-safe: mức mới xuất hiện nến này
+// mà giá đã ở trên nó thì vẫn tính là phá.
+breakUp   = not na(activeRes) and close > activeRes and (na(activeRes[1]) or close[1] <= activeRes[1])
+breakDown = not na(activeSup) and close < activeSup and (na(activeSup[1]) or close[1] >= activeSup[1])
+
+// Xóa mức sau khi vỡ (high > đỏ / low < vàng), áp dụng từ nến sau qua var.
+if not na(activeRes) and high > activeRes
+    activeRes := na
+if not na(activeSup) and low < activeSup
+    activeSup := na
+
+// Vẽ cục: chấm tròn ở mức active mỗi nến (như .mq5 vẽ dot mỗi nến).
+plot(showFractal ? activeRes : na, "Resistance (đỏ)", color.new(color.red, 0), style=plot.style_circles, linewidth=2)
+plot(showFractal ? activeSup : na, "Support (vàng)", color.new(color.yellow, 0), style=plot.style_circles, linewidth=2)
+plotshape(showFractal and not na(ph), "Swing High", shape.circle, location.abovebar, color.red, size=size.tiny)
+plotshape(showFractal and not na(pl), "Swing Low", shape.circle, location.belowbar, color.yellow, size=size.tiny)
+
+// ---------- MŨI TÊN ĐỎ (SELL) ----------
+// Bước 1: %R đã từng ở trên mức quá mua
+var bool redWasAbove = false
+// Bước 2a: %R đã cắt xuống EMA trong chuỗi hiện tại
+var bool redCrossedDown = false
+// Bước 2b: BB đã phá xuống (close < band dưới) trong chuỗi hiện tại
+var bool redBBBroken = false
+// Bước 2 xong: hook đã hình thành (đủ độ cong EMA)
+var bool redHooked = false
+// Bước 3: %R cắt lên trên mức -5, đang chờ phá cục VÀNG xuống
+var bool redWaitCandle = false
+
+// Chuỗi đỏ bắt đầu khi %R cắt lên trên -5: reset 2 latch (tránh dùng break cũ)
+if ta.crossover(wpr, obLevel)
+    redCrossedDown := false
+    redBBBroken := false
+if wpr > obLevel
+    redWasAbove := true
+
+// %R cắt xuống EMA
+if ta.crossunder(wpr, ema) and redWasAbove
+    redCrossedDown := true
+
+// BB phá xuống: close dưới band dưới (chỉ cần phá là được)
+if close < bbLower and redWasAbove
+    redBBBroken := true
+
+// %R cắt ngược lên trên EMA -> chuỗi xuống đã hết, reset 2 latch
+if ta.crossover(wpr, ema)
+    redCrossedDown := false
+    redBBBroken := false
+
+// Hook hình thành khi cả 2 điều kiện đủ: cắt xuống EMA + BB phá xuống
+redHookFormed = redCrossedDown and redBBBroken
+if redHookFormed
+    redHooked := true
+    redWasAbove := false
+    redCrossedDown := false
+    redBBBroken := false
+
+redCrossUpOB  = ta.crossover(wpr, obLevel)
+redLevelCross = redCrossUpOB and redHooked
+if redLevelCross
+    redWaitCandle := true
+    redHooked := false
+
+// HỦY CHỜ: trong lúc chờ vẽ mũi tên, EMA xuống dưới -60 thì bỏ
+redCancelNow = (redHooked or redWaitCandle) and ema < redCancelLevel
+if redCancelNow
+    redHooked := false
+    redWaitCandle := false
+    redWasAbove := false
+    redCrossedDown := false
+    redBBBroken := false
+
+// Bước 4: đóng cửa dưới cục VÀNG (hỗ trợ) -> vẽ mũi tên đỏ
+redArrow = redWaitCandle and breakDown
+if redArrow
+    redWaitCandle := false
+
+// ---------- MŨI TÊN XANH (BUY) — ngược lại ----------
+// Bước 1: %R đã từng ở dưới mức quá bán
+var bool greenWasBelow = false
+// Bước 2a: %R đã cắt lên EMA trong chuỗi hiện tại
+var bool greenCrossedUp = false
+// Bước 2b: BB đã phá lên (close > band trên) trong chuỗi hiện tại
+var bool greenBBBroken = false
+// Bước 2 xong: hook đã hình thành
+var bool greenHooked = false
+// Bước 3: %R cắt xuống dưới mức -95, đang chờ phá cục ĐỎ lên
+var bool greenWaitCandle = false
+
+// Chuỗi xanh bắt đầu khi %R cắt xuống dưới -95: reset 2 latch
+if ta.crossunder(wpr, osLevel)
+    greenCrossedUp := false
+    greenBBBroken := false
+if wpr < osLevel
+    greenWasBelow := true
+
+// %R cắt lên EMA
+if ta.crossover(wpr, ema) and greenWasBelow
+    greenCrossedUp := true
+
+// BB phá lên: close trên band trên (chỉ cần phá là được)
+if close > bbUpper and greenWasBelow
+    greenBBBroken := true
+
+// %R cắt ngược xuống dưới EMA -> chuỗi lên đã hết, reset 2 latch
+if ta.crossunder(wpr, ema)
+    greenCrossedUp := false
+    greenBBBroken := false
+
+// Hook hình thành khi cả 2 điều kiện đủ: cắt lên EMA + BB phá lên
+greenHookFormed = greenCrossedUp and greenBBBroken
+if greenHookFormed
+    greenHooked := true
+    greenWasBelow := false
+    greenCrossedUp := false
+    greenBBBroken := false
+
+greenCrossDownOS = ta.crossunder(wpr, osLevel)
+greenLevelCross  = greenCrossDownOS and greenHooked
+if greenLevelCross
+    greenWaitCandle := true
+    greenHooked := false
+
+// HỦY CHỜ: trong lúc chờ vẽ mũi tên, EMA lên trên -40 thì bỏ
+greenCancelNow = (greenHooked or greenWaitCandle) and ema > greenCancelLevel
+if greenCancelNow
+    greenHooked := false
+    greenWaitCandle := false
+    greenWasBelow := false
+    greenCrossedUp := false
+    greenBBBroken := false
+
+// Bước 4: đóng cửa trên cục ĐỎ (kháng cự) -> vẽ mũi tên xanh
+greenArrow = greenWaitCandle and breakUp
+if greenArrow
+    greenWaitCandle := false
+
+// ---------- Vẽ mũi tên lên chart giá ----------
+plotshape(redArrow,   title="Red Arrow (Sell)", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0),   size=size.small)
+plotshape(greenArrow, title="Green Arrow (Buy)", style=shape.triangleup,   location=location.belowbar, color=color.new(color.green, 0), size=size.small)
+
+// ---------- Debug: đánh dấu bước hook + cắt lại mức + hủy chờ ----------
+//  Hình thoi = lúc hook hình thành (đủ cả 2: cắt EMA + phá BB)
+//  Hình tròn nhỏ = lúc %R cắt lại mức -5 / -95 (bắt đầu chờ phá cục Fractal SR)
+//  Dấu X xám = lúc setup bị hủy vì EMA quá -60 / -40
+plotshape(showDebug and redHookFormed,   title="Red hook",        style=shape.diamond, location=location.belowbar, color=color.new(color.orange, 0), size=size.tiny)
+plotshape(showDebug and redLevelCross,   title="Red level cross", style=shape.circle,  location=location.abovebar, color=color.new(color.red, 0),    size=size.tiny)
+plotshape(showDebug and redCancelNow,    title="Red cancel",      style=shape.xcross,  location=location.abovebar, color=color.new(color.gray, 0),   size=size.tiny)
+plotshape(showDebug and greenHookFormed, title="Green hook",      style=shape.diamond, location=location.abovebar, color=color.new(color.teal, 0),   size=size.tiny)
+plotshape(showDebug and greenLevelCross, title="Green level cross", style=shape.circle, location=location.belowbar, color=color.new(color.green, 0), size=size.tiny)
+plotshape(showDebug and greenCancelNow,  title="Green cancel",    style=shape.xcross,  location=location.belowbar, color=color.new(color.gray, 0),   size=size.tiny)
+
+// ---------- Alerts ----------
+alertcondition(redArrow,   title="Red Arrow (Sell)", message="Red arrow SELL {{ticker}} {{interval}}")
+alertcondition(greenArrow, title="Green Arrow (Buy)",  message="Green arrow BUY {{ticker}} {{interval}}")

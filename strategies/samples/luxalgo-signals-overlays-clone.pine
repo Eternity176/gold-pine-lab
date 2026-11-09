@@ -1,0 +1,428 @@
+//@version=6
+// ============================================================
+//  Signals & Overlays — BẢN VIẾT LẠI (CLONE) — Pine v6
+//  Tên file: luxalgo-signals-overlays-clone.pine
+//  ------------------------------------------------------------
+//  ĐÂY KHÔNG PHẢI CODE GỐC CỦA LUXALGO, KHÔNG PHẢI BẢN CRACK.
+//  Viết lại từ MÔ TẢ CÔNG KHAI trên TradingView:
+//  https://www.tradingview.com/script/fYHlrAoz-LuxAlgo-Signals-Overlays/
+//  - All-in-one, 20+ tính năng, tín hiệu + overlay
+//  - Confirmation Signals: Normal & Strong
+//  - Contrarian Signals: Normal & Strong
+//  - Exit Signals: dấu "x"
+//  - Candle Coloring: Purple / Green / Red
+//  - 6+ Indicator Overlays, Dashboard, TP/SL, Filters,
+//    Sensitivity / Agility / Autopilot, AI Classification 1-4
+//  Logic bên trong là logic RIÊNG của tao, dùng chỉ báo chuẩn
+//  (EMA, RSI, ADX/DMI, ATR, Bollinger, Supertrend, Pivot, Donchian).
+//  Nên tín hiệu sẽ TƯƠNG TỰ VỀ Ý TƯỞNG, KHÔNG GIỐNG HỆT LuxAlgo.
+//  Đừng dùng để đánh live khi chưa tự test.
+//
+//  TRẠNG THÁI:
+//  - v1.03 (2026-11-09): LÀM ĐẸP LẠI THEO ẢNH THẬT LUXALGO — logic tín hiệu
+//    KHÔNG ĐỔI, chỉ đổi visual: tín hiệu gọn ▲/▼/▲+/▼+ (không còn chữ LONG #...),
+//    dashboard tối 5 dòng góc dưới-phải, nến xanh lá/đỏ tươi/tím, bớt clutter:
+//    TP/SL mặc định TẮT, TP Max label bỏ, preset Balanced chỉ còn Smart Trail.
+//  - v1.02 (2026-11-09): SỬA 4 LỖI CE10187 đã biên dịch thật trên TradingView —
+//    tpMaxLabel ==/!= na -> na(tpMaxLabel) / not na(tpMaxLabel). Lỗi do tao
+//    sửa sai ở v1.01 (tưởng == na mới đúng, thực ra Pine v6 bắt dùng na()).
+//  - v1.01 (2026-11-09): SỬA LỖI BIÊN DỊCH Autopilot — length EMA không còn
+//    là series nữa (xem FIX ở phần CORE CALCULATIONS). Chưa biên dịch lại
+//    trên TradingView (không có compiler local), mày paste lại là bước check cuối.
+//  - CHƯA BIÊN DỊCH trên TradingView (không có compiler local).
+//    Mày paste vào Pine Editor -> Add to chart là bước compile cuối.
+//    Nếu TradingView báo lỗi, chụp màn hình gửi tao sửa.
+//  - CHƯA BACKTEST. Đây là INDICATOR (chỉ vẽ tín hiệu), không phải
+//    strategy, không có số PF / WR / DD nào. Đừng coi tín hiệu
+//    là lệnh chắc thắng. Trên vàng M1 nhiễu rất mạnh, tín hiệu
+//    trend-following thường bị quét SL.
+//  - KHÔNG REPAINT SAU KHI NẾN ĐÓNG: mọi tín hiệu chỉ dùng giá
+//    đóng cửa (close) và các chỉ báo tính từ close. Nến đang
+//    chạy thì tín hiệu có thể đổi, nến đóng rồi thì không đổi.
+//    TP Max của lệnh đang mở thì cập nhật theo thời gian thực
+//    (đúng như mô tả gốc), đó là cố ý, không phải repaint.
+//  - Tài khoản mày đã hết slot Save (1 saved script, mày đang
+//    có 5 script). Paste xong bấm "Add to chart", để Untitled,
+//    KHÔNG cần Save. File .pine này là bản gốc để giữ.
+//
+//  CÁCH DÙNG NHANH:
+//  1. TradingView -> Pine Editor -> xóa hết -> paste toàn bộ file
+//  2. Add to chart, chọn XAUUSD M1 (hoặc khung / mã mày muốn test)
+//  3. Bấm bánh răng của indicator để chỉnh Preset / Filter / TP/SL
+//  4. Preset gợi ý: Trend Following cho trend, Reversal cho bắt
+//     đảo chiều, Scalping cho M1 (nhạy hơn, nhiễu hơn).
+// ============================================================
+indicator("Signals & Overlays — Clone (Full)", shorttitle="S&O Clone Full", overlay=true, max_labels_count=500, max_lines_count=500, max_boxes_count=500)
+
+// ===================== INPUTS =====================
+// --- Preset ---
+preset = input.string("Balanced", "Preset (sẽ override 1 số toggle bên dưới)", options=["None (Custom)", "Trend Following", "Reversal / Contrarian", "Scalping", "Balanced"], group="1. Preset")
+
+// --- Signal core ---
+sensInput   = input.int(14, "Sensitivity / Length (càng nhỏ càng nhạy)", minval=2, maxval=50, group="2. Signals")
+autopilot   = input.bool(false, "Autopilot — tự đổi Sensitivity theo biến động", group="2. Signals")
+agility     = input.float(1.0, "Agility (nhân hệ số nhạy, 0.5 chậm - 2.0 nhanh)", minval=0.5, maxval=2.0, step=0.1, group="2. Signals")
+rsiLen      = input.int(14, "RSI length", minval=2, group="2. Signals")
+adxLen      = input.int(14, "ADX / DMI length", minval=2, group="2. Signals")
+adxThresh   = input.float(20.0, "ADX tối thiểu cho Strong / Trend Filter", minval=5, maxval=50, step=1, group="2. Signals")
+showConf    = input.bool(true, "Hiện Confirmation Signals (LONG/SHORT)", group="2. Signals")
+showContra  = input.bool(true, "Hiện Contrarian Signals (LONG/SHORT ngược trend)", group="2. Signals")
+showExit    = input.bool(true, "Hiện Exit Signals (dấu X)", group="2. Signals")
+showCandle  = input.bool(true, "Tô màu nến Purple/Green/Red", group="2. Signals")
+confirmOnClose = input.bool(true, "Chỉ chốt tín hiệu khi nến đóng (chống repaint)", group="2. Signals")
+
+// --- Overlays ---
+showTrail   = input.bool(true, "Overlay: Smart Trail (ATR trailing)", group="3. Overlays")
+showRevZone = input.bool(true, "Overlay: Reversal Zones (pivot S/R)", group="3. Overlays")
+showCatcher = input.bool(true, "Overlay: Trend Catcher (EMA cloud)", group="3. Overlays")
+showSR      = input.bool(true, "Overlay: Dynamic S/R (Donchian 20)", group="3. Overlays")
+showVolBand = input.bool(false, "Overlay: Volatility Bands (Bollinger 20, 2)", group="3. Overlays")
+showMACloud = input.bool(false, "Overlay: MA Cloud (EMA 9/21)", group="3. Overlays")
+trailMult   = input.float(3.0, "Smart Trail ATR multiplier", minval=1.0, maxval=6.0, step=0.5, group="3. Overlays")
+trailAtrLen = input.int(14, "Smart Trail ATR length", minval=2, group="3. Overlays")
+revZoneLen  = input.int(5, "Reversal Zone pivot (trái/phải)", minval=2, maxval=10, group="3. Overlays")
+
+// --- Filters ---
+filterTrail = input.bool(false, "Filter: chỉ lấy tín hiệu cùng chiều Smart Trail", group="4. Filters")
+filterTrend = input.bool(false, "Filter: chỉ lấy tín hiệu khi ADX > ngưỡng", group="4. Filters")
+filterVol   = input.bool(false, "Filter: chỉ lấy tín hiệu khi Volume > trung bình", group="4. Filters")
+filterLevel = input.int(0, "Filter: chỉ lấy tín hiệu Classification >= (0 = tắt, 1-4)", minval=0, maxval=4, group="4. Filters")
+
+// --- TP / SL ---
+showTPSL    = input.bool(false, "Hiện TP/SL của tín hiệu đang mở (mặc định tắt cho chart sạch)", group="5. TP/SL")
+slMult      = input.float(1.5, "SL = ATR x", minval=0.5, maxval=5.0, step=0.25, group="5. TP/SL")
+tp1Mult     = input.float(1.5, "TP1 = ATR x", minval=0.5, maxval=5.0, step=0.25, group="5. TP/SL")
+tp2Mult     = input.float(3.0, "TP2 = ATR x", minval=0.5, maxval=8.0, step=0.25, group="5. TP/SL")
+
+// --- Dashboard ---
+showDash    = input.bool(true, "Hiện Dashboard", group="6. Dashboard")
+
+// --- Alerts ---
+useAlerts   = input.bool(true, "Bật alert() cho LONG / SHORT / EXIT", group="7. Alerts")
+
+// ===================== PRESET OVERRIDE =====================
+// Preset != Custom thì override toggle cho đúng ý đồ của preset.
+// Custom thì tôn trọng đúng toggle mày bật/tắt ở trên.
+isTrendPreset = preset == "Trend Following"
+isReversalPreset = preset == "Reversal / Contrarian"
+isScalpPreset = preset == "Scalping"
+isBalancedPreset = preset == "Balanced"
+isCustom = preset == "None (Custom)"
+
+useConf   = isCustom ? showConf : true
+useContra = isCustom ? showContra : isReversalPreset
+useTrail  = isCustom ? showTrail : true
+useRevZone = isCustom ? showRevZone : isReversalPreset
+useCatcher = isCustom ? showCatcher : (isTrendPreset or isScalpPreset)
+useSR     = isCustom ? showSR : isTrendPreset
+useVolBand = isCustom ? showVolBand : false
+useMACloud = isCustom ? showMACloud : isScalpPreset
+useCandle = isCustom ? showCandle : true
+
+// Scalping: nhạy hơn hẳn. Các preset khác giữ sensInput.
+sensPreset = isScalpPreset ? math.max(2, int(math.round(sensInput * 0.6))) : sensInput
+
+// ===================== CORE CALCULATIONS =====================
+atrVal = ta.atr(trailAtrLen)
+atrPct = atrVal / close * 100.0
+atrPctSMA = ta.sma(atrPct, 50)
+volRatioATR = atrPct / nz(atrPctSMA, atrPct)
+// FIX 2026-11-09 — LỖI BIÊN DỊCH: Pine v6 bắt length của ta.ema() phải là
+// "simple int" (chỉ từ input / hằng số), không được là series thay đổi theo
+// từng nến. Bản cũ tính sensEff từ atrPct (series) -> ta.ema(close, fastLen)
+// bị lỗi "An argument of 'series int' type was used but a 'simple int'
+// is expected". Nên sensEff giờ CHỈ tính từ input, không dùng atrPct nữa.
+// Autopilot không đổi length nữa, mà đổi ngưỡng ADX (adxThreshEff) theo
+// biến động — cái này là series float, dùng để so sánh thì được.
+// Agility: 2.0 = nhanh (length nhỏ lại), 0.5 = chậm (length lớn lên) -> chia.
+sensEff = int(math.round(math.min(30.0, math.max(5.0, sensPreset / agility))))
+// Autopilot: biến động cao -> đòi ADX cao hơn mới tính là Strong.
+volRatioATREff = autopilot ? volRatioATR : 1.0
+adxThreshEff = adxThresh * volRatioATREff
+fastLen = math.max(2, sensEff)
+midLen  = math.max(3, fastLen * 2)
+slowLen = math.max(5, fastLen * 4)
+
+emaFast = ta.ema(close, fastLen)
+emaMid  = ta.ema(close, midLen)
+emaSlow = ta.ema(close, slowLen)
+ema9    = ta.ema(close, 9)
+ema21   = ta.ema(close, 21)
+ema55   = ta.ema(close, 55)
+
+rsiVal = ta.rsi(close, rsiLen)
+[diPlus, diMinus, adxVal] = ta.dmi(adxLen, adxLen)
+momVal = ta.mom(close, 10)
+[bbBasis, bbUpper, bbLower] = ta.bb(close, 20, 2.0)
+donHigh = ta.highest(high, 20)
+donLow  = ta.lowest(low, 20)
+volSMA = ta.sma(nz(volume, 0), 20)
+volRatio = nz(volume, 0) / nz(volSMA, 1)
+volRatioSafe = na(volRatio) ? 1.0 : volRatio
+
+// Smart Trail = Supertrend ATR trailing (logic chuẩn, công khai).
+[smartTrail, smartDir] = ta.supertrend(trailMult, trailAtrLen)
+trailIsUp = smartDir == 1
+
+trendUp   = emaFast > emaMid and emaMid > emaSlow
+trendDown = emaFast < emaMid and emaMid < emaSlow
+trendFlat = not trendUp and not trendDown
+
+// ===================== CONFLUENCE SCORE + CLASSIFICATION 1-4 =====================
+// Điểm cộng dồn cho LONG và SHORT, dùng để xếp Strong / Level 1-4.
+// 6 tiêu chí, mỗi cái 1 điểm. Đây là logic riêng, không phải ML của LuxAlgo.
+scoreLong = (trendUp ? 1 : 0) + (rsiVal > 55 ? 1 : 0) + (momVal > 0 ? 1 : 0) + (close > smartTrail ? 1 : 0) + (adxVal > adxThreshEff ? 1 : 0) + (volRatioSafe > 1.0 ? 1 : 0)
+scoreShort = (trendDown ? 1 : 0) + (rsiVal < 45 ? 1 : 0) + (momVal < 0 ? 1 : 0) + (close < smartTrail ? 1 : 0) + (adxVal > adxThreshEff ? 1 : 0) + (volRatioSafe > 1.0 ? 1 : 0)
+
+levelLong = scoreLong >= 5 ? 4 : scoreLong >= 4 ? 3 : scoreLong >= 2 ? 2 : 1
+levelShort = scoreShort >= 5 ? 4 : scoreShort >= 4 ? 3 : scoreShort >= 2 ? 2 : 1
+isStrongLong = scoreLong >= 4
+isStrongShort = scoreShort >= 4
+
+// ===================== SIGNAL TRIGGERS (edge, close-based) =====================
+// Chỉ dùng close / chỉ báo từ close -> không lookahead, không dùng future bar.
+// Trigger khi điều kiện vừa chuyển từ false -> true.
+longConfRaw = close > emaFast and emaFast > emaMid and rsiVal > 50 and momVal > 0
+shortConfRaw = close < emaFast and emaFast < emaMid and rsiVal < 50 and momVal < 0
+longConfEdge = longConfRaw and not longConfRaw[1]
+shortConfEdge = shortConfRaw and not shortConfRaw[1]
+
+// Contrarian: RSI quá mua/quá bán + giá chạm ngoài Bollinger + nến đảo chiều.
+longContraRaw = rsiVal < 30 and close < bbLower and close > open
+shortContraRaw = rsiVal > 70 and close > bbUpper and close < open
+longContraEdge = longContraRaw and not longContraRaw[1]
+shortContraEdge = shortContraRaw and not shortContraRaw[1]
+
+// Filters (áp cho cả Confirmation và Contrarian)
+trailOkLong = not filterTrail or close > smartTrail
+trailOkShort = not filterTrail or close < smartTrail
+trendOk = not filterTrend or adxVal > adxThreshEff
+volOk = not filterVol or volRatioSafe > 1.0
+levelOkLong = filterLevel == 0 or levelLong >= filterLevel
+levelOkShort = filterLevel == 0 or levelShort >= filterLevel
+
+longConfOk = longConfEdge and trailOkLong and trendOk and volOk and levelOkLong
+shortConfOk = shortConfEdge and trailOkShort and trendOk and volOk and levelOkShort
+longContraOk = longContraEdge and trailOkLong and volOk and levelOkLong
+shortContraOk = shortContraEdge and trailOkShort and volOk and levelOkShort
+
+// Chốt ở đóng nến: nếu confirmOnClose = true thì chỉ tính khi bar đã đóng.
+// Trên bar lịch sử thì barstate.isconfirmed luôn true, nên không mất tín hiệu cũ.
+barOk = not confirmOnClose or barstate.isconfirmed
+longConf = useConf and longConfOk and barOk
+shortConf = useConf and shortConfOk and barOk
+longContra = useContra and longContraOk and barOk
+shortContra = useContra and shortContraOk and barOk
+
+// ===================== STATE MACHINE: 1 TÍN HIỆU / 1 LEG =====================
+var int pos = 0 // 1 = đang LONG, -1 = đang SHORT, 0 = flat
+var int sigNum = 0
+var float entryP = na
+var float slP = na
+var float tp1P = na
+var float tp2P = na
+var float maxFavP = na
+var float maxFavR = na
+var int curLevel = 0
+var string curKind = ""
+
+longSignal = longConf or longContra
+shortSignal = shortConf or shortContra
+longIsStrong = longConf ? isStrongLong : longContra ? (levelLong >= 3) : false
+shortIsStrong = shortConf ? isStrongShort : shortContra ? (levelShort >= 3) : false
+longKind = longContra ? "CONTRA" : (longIsStrong ? "STRONG" : "NORMAL")
+shortKind = shortContra ? "CONTRA" : (shortIsStrong ? "STRONG" : "NORMAL")
+longLevelNow = longConf ? levelLong : levelLong
+shortLevelNow = shortConf ? levelShort : levelShort
+
+// --- Mở LONG ---
+if longSignal and pos != 1
+    // Nếu đang SHORT thì đóng SHORT cũ trước (EXIT) rồi mới mở LONG.
+    if pos == -1
+        if useAlerts
+            alert("EXIT SHORT " + syminfo.ticker + " " + timeframe.period + " @ " + str.tostring(close), alert.freq_once_per_bar_close)
+    pos := 1
+    sigNum += 1
+    entryP := close
+    slP := close - atrVal * slMult
+    tp1P := close + atrVal * tp1Mult
+    tp2P := close + atrVal * tp2Mult
+    maxFavP := high
+    maxFavR := 0.0
+    curLevel := longLevelNow
+    curKind := longKind
+    // Label LONG/SHORT vẽ bằng plotshape ở dưới (kiểu LuxAlgo ▲/▼), không vẽ ở đây nữa.
+    if useAlerts
+        alert("LONG #" + str.tostring(sigNum) + " " + syminfo.ticker + " " + timeframe.period + " Entry " + str.tostring(close) + " SL " + str.tostring(slP) + " TP1 " + str.tostring(tp1P) + " L" + str.tostring(curLevel), alert.freq_once_per_bar_close)
+
+// --- Mở SHORT ---
+if shortSignal and pos != -1
+    if pos == 1
+        if useAlerts
+            alert("EXIT LONG " + syminfo.ticker + " " + timeframe.period + " @ " + str.tostring(close), alert.freq_once_per_bar_close)
+    pos := -1
+    sigNum += 1
+    entryP := close
+    slP := close + atrVal * slMult
+    tp1P := close - atrVal * tp1Mult
+    tp2P := close - atrVal * tp2Mult
+    maxFavP := low
+    maxFavR := 0.0
+    curLevel := shortLevelNow
+    curKind := shortKind
+    // Label SHORT vẽ bằng plotshape ở dưới (kiểu LuxAlgo ▼/▼+).
+    if useAlerts
+        alert("SHORT #" + str.tostring(sigNum) + " " + syminfo.ticker + " " + timeframe.period + " Entry " + str.tostring(close) + " SL " + str.tostring(slP) + " TP1 " + str.tostring(tp1P) + " L" + str.tostring(curLevel), alert.freq_once_per_bar_close)
+
+// --- Cập nhật trailing + TP Max khi đang có lệnh ---
+if pos == 1
+    // Trail SL theo Smart Trail (chỉ dời lên, không dời xuống)
+    slP := math.max(nz(slP, entryP - atrVal * slMult), smartTrail)
+    maxFavP := math.max(nz(maxFavP, high), high)
+    // R dùng SL ban đầu để đo TP Max cho đúng, không dùng SL đã trail.
+    initRisk = atrVal * slMult
+    maxFavR := (nz(maxFavP, entryP) - entryP) / (initRisk == 0 ? 1 : initRisk)
+else if pos == -1
+    slP := math.min(nz(slP, entryP + atrVal * slMult), smartTrail)
+    maxFavP := math.min(nz(maxFavP, low), low)
+    initRiskS = atrVal * slMult
+    maxFavR := (entryP - nz(maxFavP, entryP)) / (initRiskS == 0 ? 1 : initRiskS)
+
+// --- Đóng lệnh: chạm SL / chạm Trail / tín hiệu ngược / RSI cực đoan ---
+exitLongTrail = pos == 1 and close < smartTrail
+exitLongSL = pos == 1 and close < slP
+exitLongRSI = pos == 1 and rsiVal > 78
+exitShortTrail = pos == -1 and close > smartTrail
+exitShortSL = pos == -1 and close > slP
+exitShortRSI = pos == -1 and rsiVal < 22
+exitLong = exitLongTrail or exitLongSL or exitLongRSI
+exitShort = exitShortTrail or exitShortSL or exitShortRSI
+
+if exitLong
+    if useAlerts
+        alert("EXIT LONG #" + str.tostring(sigNum) + " " + syminfo.ticker + " " + timeframe.period + " @ " + str.tostring(close) + " TPMAX " + str.tostring(nz(maxFavR, 0), "#.##") + "R", alert.freq_once_per_bar_close)
+    pos := 0
+    entryP := na
+    slP := na
+    tp1P := na
+    tp2P := na
+    maxFavP := na
+    maxFavR := na
+
+if exitShort
+    if useAlerts
+        alert("EXIT SHORT #" + str.tostring(sigNum) + " " + syminfo.ticker + " " + timeframe.period + " @ " + str.tostring(close) + " TPMAX " + str.tostring(nz(maxFavR, 0), "#.##") + "R", alert.freq_once_per_bar_close)
+    pos := 0
+    entryP := na
+    slP := na
+    tp1P := na
+    tp2P := na
+    maxFavP := na
+    maxFavR := na
+
+// ===================== TÍN HIỆU KIỂU LUXALGO (ảnh thật) =====================
+// LuxAlgo không vẽ chữ "LONG #123 L2 NORMAL" to đùng. Nó chỉ vẽ 1 ô vuông
+// nhỏ với ▲/▼ trắng bên trong: xanh lá = long, đỏ = short, "+" = strong,
+// tím = contrarian. Nhỏ, gọn, không che nến.
+// Confirmation — Normal (▲/▼) và Strong (▲+/▼+)
+plotshape(longConf and not isStrongLong, title="Long", style=shape.labelup, location=location.belowbar, color=#089981, text="▲", textcolor=color.white, size=size.tiny)
+plotshape(longConf and isStrongLong, title="Long Strong", style=shape.labelup, location=location.belowbar, color=#089981, text="▲+", textcolor=color.white, size=size.small)
+plotshape(shortConf and not isStrongShort, title="Short", style=shape.labeldown, location=location.abovebar, color=#f23645, text="▼", textcolor=color.white, size=size.tiny)
+plotshape(shortConf and isStrongShort, title="Short Strong", style=shape.labeldown, location=location.abovebar, color=#f23645, text="▼+", textcolor=color.white, size=size.small)
+// Contrarian — tím, cùng ký hiệu ▲/▼
+plotshape(longContra, title="Long Contrarian", style=shape.labelup, location=location.belowbar, color=#7e57c2, text="▲", textcolor=color.white, size=size.tiny)
+plotshape(shortContra, title="Short Contrarian", style=shape.labeldown, location=location.abovebar, color=#7e57c2, text="▼", textcolor=color.white, size=size.tiny)
+
+// Dấu X cho Exit Signals — LuxAlgo: X xanh dương = chốt long, X cam = chốt short, rất nhỏ.
+plotshape(showExit and pos == 1 and rsiVal > 75, title="Exit X Long", style=shape.xcross, location=location.abovebar, color=#2962ff, size=size.tiny)
+plotshape(showExit and pos == -1 and rsiVal < 25, title="Exit X Short", style=shape.xcross, location=location.belowbar, color=#ff9800, size=size.tiny)
+plotshape(showExit and exitLong, title="Exit Long", style=shape.xcross, location=location.abovebar, color=#2962ff, size=size.tiny)
+plotshape(showExit and exitShort, title="Exit Short", style=shape.xcross, location=location.belowbar, color=#ff9800, size=size.tiny)
+
+// ===================== PLOTS: OVERLAYS =====================
+// Smart Trail
+plot(useTrail ? smartTrail : na, "Smart Trail", color=trailIsUp ? #00e676 : #ff1744, linewidth=2)
+
+// Trend Catcher: EMA 21 / 55
+plot(useCatcher ? ema21 : na, "Trend Catcher Fast 21", color=color.new(color.teal, 0), linewidth=1)
+plot(useCatcher ? ema55 : na, "Trend Catcher Slow 55", color=color.new(color.orange, 0), linewidth=1)
+p21 = plot(useCatcher ? ema21 : na, "TC21 plot", color=color.new(color.teal, 0), display=display.none)
+p55 = plot(useCatcher ? ema55 : na, "TC55 plot", color=color.new(color.orange, 0), display=display.none)
+fill(p21, p55, color=ema21 > ema55 ? color.new(color.teal, 92) : color.new(color.orange, 92), title="Trend Catcher Cloud")
+
+// MA Cloud: EMA 9 / 21
+plot(useMACloud ? ema9 : na, "MA Cloud Fast 9", color=color.new(color.blue, 0), linewidth=1)
+plot(useMACloud ? ema21 : na, "MA Cloud Slow 21", color=color.new(color.purple, 0), linewidth=1)
+p9 = plot(useMACloud ? ema9 : na, "MA9 plot", color=color.new(color.blue, 0), display=display.none)
+p21b = plot(useMACloud ? ema21 : na, "MA21b plot", color=color.new(color.purple, 0), display=display.none)
+fill(p9, p21b, color=ema9 > ema21 ? color.new(color.blue, 92) : color.new(color.purple, 92), title="MA Cloud")
+
+// Dynamic S/R: Donchian
+plot(useSR ? donHigh : na, "Dynamic Resistance (Donchian 20H)", color=color.new(color.red, 75), linewidth=1, style=plot.style_linebr)
+plot(useSR ? donLow : na, "Dynamic Support (Donchian 20L)", color=color.new(color.green, 75), linewidth=1, style=plot.style_linebr)
+
+// Volatility Bands: Bollinger
+plot(useVolBand ? bbUpper : na, "Vol Band Upper", color=color.new(color.gray, 50))
+plot(useVolBand ? bbBasis : na, "Vol Band Basis", color=color.new(color.gray, 70))
+plot(useVolBand ? bbLower : na, "Vol Band Lower", color=color.new(color.gray, 50))
+
+// TP / SL của lệnh đang mở (chỉ hiện khi pos != 0)
+plot(showTPSL and pos != 0 ? entryP : na, "Entry", color=color.new(color.blue, 0), style=plot.style_linebr, linewidth=1)
+plot(showTPSL and pos != 0 ? slP : na, "Protective SL (trailing)", color=color.new(color.red, 50), style=plot.style_linebr, linewidth=1)
+plot(showTPSL and pos != 0 ? tp1P : na, "TP1", color=color.new(color.green, 0), style=plot.style_linebr, linewidth=1)
+plot(showTPSL and pos != 0 ? tp2P : na, "TP2", color=color.new(color.green, 30), style=plot.style_linebr, linewidth=1)
+
+// ===================== REVERSAL ZONES (boxes) =====================
+var box[] rzBoxes = array.new_box()
+ph = ta.pivothigh(high, revZoneLen, revZoneLen)
+pl = ta.pivotlow(low, revZoneLen, revZoneLen)
+if useRevZone and not na(ph)
+    b = box.new(bar_index - revZoneLen, ph + atrVal * 0.2, bar_index + 20, ph - atrVal * 0.2, bgcolor=color.new(color.red, 92), border_color=color.new(color.red, 80))
+    array.push(rzBoxes, b)
+if useRevZone and not na(pl)
+    b2 = box.new(bar_index - revZoneLen, pl + atrVal * 0.2, bar_index + 20, pl - atrVal * 0.2, bgcolor=color.new(color.green, 92), border_color=color.new(color.green, 80))
+    array.push(rzBoxes, b2)
+if array.size(rzBoxes) > 20
+    box.delete(array.shift(rzBoxes))
+
+// ===================== CANDLE COLORING =====================
+candleCol = scoreLong >= 5 ? #00e676 : scoreLong >= 3 ? color.new(#00e676, 35) : scoreShort >= 5 ? #ff1744 : scoreShort >= 3 ? color.new(#ff1744, 35) : #7e57c2
+barcolor(useCandle ? candleCol : na, title="Candle Coloring")
+
+// ===================== DASHBOARD (kiểu LuxAlgo — ảnh thật) =====================
+// LuxAlgo: bảng nhỏ góc dưới-phải, nền tối #131722, chữ xám nhạt, chỉ 5 dòng:
+// Optimal Sensitivity / Trend Strength % / Lux Volatility / Squeeze % /
+// Volume Sentiment %. Không còn bảng trắng 10 dòng góc trên-phải nữa.
+kcUpper = bbBasis + atrVal * 1.5
+kcLower = bbBasis - atrVal * 1.5
+kcWidth = kcUpper - kcLower
+bbWidth = bbUpper - bbLower
+squeezePct = kcWidth == 0 ? 0.0 : math.max(0.0, math.min(100.0, (1.0 - bbWidth / kcWidth) * 100.0))
+volSentPct = (volRatioSafe - 1.0) * 100.0
+luxVolTxt = atrPct < nz(atrPctSMA, atrPct) ? "Low" : "High"
+luxVolCol = luxVolTxt == "Low" ? #089981 : #f23645
+trendStrCol = adxVal >= 25 ? #089981 : adxVal >= 20 ? #e6a817 : #f23645
+volSentCol = volSentPct >= 0 ? #089981 : #f23645
+sqzCol = squeezePct >= 50 ? #089981 : #b2b5be
+dashBg = color.new(#131722, 0)
+dashCellBg = color.new(#1e222d, 0)
+dashTxtCol = #b2b5be
+var table dash = table.new(position.bottom_right, 2, 5, bgcolor=dashBg, border_width=1, border_color=color.new(#363c4e, 0))
+if showDash and barstate.islast
+    table.cell(dash, 0, 0, "◉ Optimal Sensitivity", text_color=dashTxtCol, bgcolor=dashCellBg, text_size=size.small)
+    table.cell(dash, 1, 0, str.tostring(sensEff), text_color=color.white, bgcolor=dashCellBg, text_size=size.small)
+    table.cell(dash, 0, 1, "🔥 Trend Strength", text_color=dashTxtCol, bgcolor=dashCellBg, text_size=size.small)
+    table.cell(dash, 1, 1, str.tostring(adxVal, "#.#") + "%", text_color=trendStrCol, bgcolor=dashCellBg, text_size=size.small)
+    table.cell(dash, 0, 2, "⚠ Lux Volatility", text_color=dashTxtCol, bgcolor=dashCellBg, text_size=size.small)
+    table.cell(dash, 1, 2, luxVolTxt, text_color=luxVolCol, bgcolor=dashCellBg, text_size=size.small)
+    table.cell(dash, 0, 3, "▣ Squeeze", text_color=dashTxtCol, bgcolor=dashCellBg, text_size=size.small)
+    table.cell(dash, 1, 3, str.tostring(squeezePct, "#.#") + "%", text_color=sqzCol, bgcolor=dashCellBg, text_size=size.small)
+    table.cell(dash, 0, 4, "💧 Volume Sentiment", text_color=dashTxtCol, bgcolor=dashCellBg, text_size=size.small)
+    table.cell(dash, 1, 4, (volSentPct >= 0 ? "+" : "") + str.tostring(volSentPct, "#.#") + "%", text_color=volSentCol, bgcolor=dashCellBg, text_size=size.small)
+
+// ===================== ALERTCONDITIONS (cho Alert Creator) =====================
+alertcondition(longConf, title="Long Confirmation", message="Long Confirmation {{ticker}} {{interval}} @ {{close}}")
+alertcondition(shortConf, title="Short Confirmation", message="Short Confirmation {{ticker}} {{interval}} @ {{close}}")
+alertcondition(longContra, title="Long Contrarian", message="Long Contrarian {{ticker}} {{interval}} @ {{close}}")
+alertcondition(shortContra, title="Short Contrarian", message="Short Contrarian {{ticker}} {{interval}} @ {{close}}")
+alertcondition(exitLong or exitShort, title="Exit Signal", message="Exit {{ticker}} {{interval}} @ {{close}}")

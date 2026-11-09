@@ -1,0 +1,322 @@
+//@version=6
+// FractalSR + Williams %R (89) — Strategy v1
+// Phương pháp của user, code hóa từ mô tả + file FractalSR_Dots_MT5.mq5 + ảnh lệnh SELL.
+// 
+// LOGIC GỐC (đọc từ .mq5):
+//  - Đỏ = Resistance = Swing High 5-5 (cao nhất 11 nến, trái cho bằng, phải phải thấp hơn hẳn).
+//    Chốt sau 5 nến phải. Trong cùng 1 chân tăng (chưa có swing low mới), chỉ nhận đỉnh cao hơn
+//    đỉnh đang active (FilterSameLegPeaks). Vỡ khi high > mức đỏ -> mức đỏ bị xóa từ nến sau.
+//  - Vàng = Support = Swing Low 5-5 (thấp nhất 11 nến). Không có filter như đỏ: swing low mới
+//    nào cũng thay thế mức vàng đang active. Vỡ khi low < mức vàng -> mức vàng bị xóa từ nến sau.
+//  - Đây KHÔNG phải Order Block / FVG. Nó là Fractal SR thuần.
+//
+// SETUP BUY (SELL ngược lại):
+//  1. %R (89) từng đóng dưới -80, và từ lúc đó chưa từng đóng trên -20 (arm latch).
+//  2. Phá 1: close > cục đỏ. Lúc này %R vẫn < -20 (tự động đúng vì arm chưa bị hủy).
+//  3. Giá hồi xuống, tạo đáy thấp hơn đáy thấp nhất trước phá 1.
+//  4. Phá 2: close > cục đỏ (mới). Sau phá 2 giá phải đi lên hẳn 1 đoạn (>= minImpulseATR).
+//  5. Entry: chờ giá hồi về tầm cục đỏ vừa phá (limit order tại mức đỏ đó).
+//  6. SL: tầm fibo 80 của chân phá 2: SL = đỉnh chân - 0.80 * (đỉnh chân - đáy chân).
+//     (đáy chân = đáy thấp nhất trước phá 2, đỉnh chân = đỉnh cao nhất của chân trước khi hồi về)
+//  7. TP: %R cắt lên trên -20 (user ghi "%R > 80" — hiểu là thang 0-100 đảo ngược, tương đương -20
+//     trên thang -100..0 của TradingView), hoặc trailing SL theo ATR.
+//
+// GIẢ ĐỊNH CẦN USER CHỐT (xem cuối file / tin nhắn kèm theo):
+//  A. Fibo 80 lấy trên chân phá 2 (từ đáy thấp nhất trước phá 2 tới đỉnh cao nhất trước hồi về).
+//  B. "Đáy thấp nhất của lần phá" = lowest low từ lúc arm (phá 1) / từ sau phá 1 (phá 2).
+//  C. TP "%R > 80" = %R > -20 trên thang TradingView. Input tpWprLong = -20.
+
+strategy("FractalSR WPR89 v1", overlay=true, initial_capital=10000,
+     default_qty_type=strategy.percent_of_equity, default_qty_value=10,
+     commission_type=strategy.commission.percent, commission_value=0.05)
+
+// ---------- Inputs ----------
+leftBars          = input.int(5,  "Fractal left bars",  minval=1)
+rightBars         = input.int(5,  "Fractal right bars", minval=1)
+filterSameLeg     = input.bool(true, "Filter lower highs cùng chân (như .mq5)")
+wprLen            = input.int(89, "Williams %R length", minval=2)
+wprOversold       = input.float(-80.0, "WPR oversold (<)", step=1)
+wprOverbought     = input.float(-20.0, "WPR overbought (>)", step=1)
+atrLen            = input.int(14, "ATR length", minval=1)
+minImpulseATR     = input.float(0.5, "Phá 2 phải đi lên tối thiểu (x ATR)", minval=0.0, step=0.1)
+fiboSL            = input.float(0.80, "SL tại fibo retracement", minval=0.5, maxval=1.0, step=0.05)
+maxBarsBetween    = input.int(100, "Tối đa số nến giữa phá 1 và phá 2", minval=5)
+pendingExpiry     = input.int(30, "Pending hồi về hết hạn sau (nến)", minval=5)
+retestTolATR      = input.float(0.15, "Dung sai hồi về quanh mức phá (x ATR)", minval=0.0, step=0.05)
+useTrail          = input.bool(true, "Dùng trailing SL theo ATR")
+trailATR          = input.float(1.5, "Trailing: SL cách đỉnh/đáy chân (x ATR)", minval=0.5, step=0.1)
+tpWprLong         = input.float(-20.0, "TP Long khi WPR cắt lên trên", step=1)
+tpWprShort        = input.float(-80.0, "TP Short khi WPR cắt xuống dưới", step=1)
+
+// ---------- Indicators ----------
+wpr   = ta.wpr(wprLen)          // thang -100 .. 0
+atrV  = ta.atr(atrLen)
+ph    = ta.pivothigh(high, leftBars, rightBars)   // giá đỉnh swing khi được chốt (sau rightBars nến)
+pl    = ta.pivotlow(low, leftBars, rightBars)     // giá đáy swing khi được chốt
+
+// ---------- Fractal SR active levels (port từ .mq5) ----------
+var float activeRes = na
+var float activeSup = na
+var int lastPeakBar = na
+var int lastTroughBar = na
+
+if not na(ph)
+    adopt = true
+    if filterSameLeg and not na(activeRes) and (na(lastTroughBar) or lastTroughBar <= lastPeakBar) and ph < activeRes
+        adopt := false
+    if adopt
+        activeRes := ph
+        lastPeakBar := bar_index
+
+if not na(pl)
+    activeSup := pl
+    lastTroughBar := bar_index
+
+// Break detection: dùng mức TRƯỚC khi xóa (như .mq5: check high/low rồi mới xóa từ nến sau).
+// close > đỏ = phá lên, close < vàng = phá xuống. Điều kiện [1] na-safe: mức mới xuất hiện nến này
+// mà giá đã ở trên nó thì vẫn tính là phá.
+breakUp   = not na(activeRes) and close > activeRes and (na(activeRes[1]) or close[1] <= activeRes[1])
+breakDown = not na(activeSup) and close < activeSup and (na(activeSup[1]) or close[1] >= activeSup[1])
+brokenRes = breakUp   ? activeRes : na
+brokenSup = breakDown ? activeSup : na
+
+// Xóa mức sau khi vỡ (high > đỏ / low < vàng), áp dụng từ nến sau qua var.
+if not na(activeRes) and high > activeRes
+    activeRes := na
+if not na(activeSup) and low < activeSup
+    activeSup := na
+
+plot(activeRes, "Resistance (đỏ)", color.new(color.red, 0), style=plot.style_linebr, linewidth=2)
+plot(activeSup, "Support (vàng)", color.new(color.yellow, 0), style=plot.style_linebr, linewidth=2)
+plotshape(not na(ph), "Swing High", shape.circle, location.abovebar, color.red, size=size.tiny)
+plotshape(not na(pl), "Swing Low", shape.circle, location.belowbar, color.yellow, size=size.tiny)
+
+// ---------- State machine: LONG ----------
+// Arm latch: %R từng < -80, chưa từng > -20 kể từ đó.
+var bool longArmed = false
+var int  longBreaks = 0
+var float longTrackLow = na
+var float longBreak1Low = na
+var int  longBreak1Bar = na
+var float longBrokenRes = na
+var int  longBreak2Bar = na
+var float longImpulseLow = na
+var float longImpulseHigh = na
+var bool longReady = false
+var float longEntry = na
+var float longSL = na
+
+if wpr < wprOversold and not longArmed and strategy.position_size <= 0
+    longArmed := true
+    longBreaks := 0
+    longTrackLow := low
+if wpr > wprOverbought
+    if longReady and strategy.position_size <= 0
+        strategy.cancel("Long")
+    longArmed := false
+    longBreaks := 0
+    longReady := false
+
+// Track lowest low: trước phá 1 là từ lúc arm, sau phá 1 là từ sau phá 1.
+if longArmed and longBreaks == 0
+    longTrackLow := na(longTrackLow) ? low : math.min(longTrackLow, low)
+if longArmed and longBreaks == 1
+    longTrackLow := na(longTrackLow) ? low : math.min(longTrackLow, low)
+
+// Hết hạn giữa 2 lần phá -> reset về 0, tính lại từ đầu.
+if longArmed and longBreaks == 1 and bar_index - longBreak1Bar > maxBarsBetween
+    longBreaks := 0
+    longBreak1Low := na
+    longTrackLow := low
+
+if longArmed and breakUp and strategy.position_size <= 0
+    if longBreaks == 0
+        longBreak1Low := math.min(nz(longTrackLow, low), low)
+        longBreak1Bar := bar_index
+        longBreaks := 1
+        longTrackLow := low
+    else if longBreaks == 1
+        break2Low = math.min(nz(longTrackLow, low), low)
+        if break2Low < longBreak1Low
+            longBrokenRes := brokenRes
+            longBreak2Bar := bar_index
+            longImpulseLow := break2Low
+            longImpulseHigh := high
+            longBreaks := 2
+        else
+            // Phá 2 không thỏa "đáy thấp hơn" -> coi như phá 1 mới (đếm lại từ lần này).
+            longBreak1Low := break2Low
+            longBreak1Bar := bar_index
+            longBreaks := 1
+            longTrackLow := low
+
+// Sau phá 2: chờ đi lên hẳn 1 đoạn rồi mới cho pending hồi về.
+if longBreaks == 2 and not longReady
+    longImpulseHigh := math.max(nz(longImpulseHigh, high), high)
+    if longImpulseHigh - longBrokenRes >= minImpulseATR * atrV
+        longReady := true
+        longEntry := longBrokenRes
+        longSL := longImpulseHigh - fiboSL * (longImpulseHigh - longImpulseLow)
+    if bar_index - longBreak2Bar > pendingExpiry or close < longImpulseLow
+        longBreaks := 0
+        longReady := false
+
+// Khi đã ready: cập nhật đỉnh chân (và SL fibo) cho tới lúc giá hồi về entry.
+if longReady and strategy.position_size <= 0 and close > longEntry
+    newHigh = math.max(longImpulseHigh, high)
+    if newHigh > longImpulseHigh
+        longImpulseHigh := newHigh
+        longSL := longImpulseHigh - fiboSL * (longImpulseHigh - longImpulseLow)
+
+// Hủy pending khi hết hạn / giá thủng SL fibo trước khi vào lệnh.
+if longReady and strategy.position_size <= 0 and (bar_index - longBreak2Bar > pendingExpiry or close < longSL)
+    longReady := false
+    longBreaks := 0
+    strategy.cancel("Long")
+
+// Vào lệnh: limit buy tại mức đỏ vừa phá (chờ hồi về, dung sai qua limit +/- tol).
+// Limit order chỉ khớp khi giá chạm/quay về mức đó; không hồi về thì không có lệnh — đúng phương pháp.
+if longReady and strategy.position_size <= 0
+    strategy.entry("Long", strategy.long, limit=longEntry + retestTolATR * atrV)
+
+// ---------- State machine: SHORT (ngược lại hoàn toàn) ----------
+var bool shortArmed = false
+var int  shortBreaks = 0
+var float shortTrackHigh = na
+var float shortBreak1High = na
+var int  shortBreak1Bar = na
+var float shortBrokenSup = na
+var int  shortBreak2Bar = na
+var float shortImpulseHigh = na
+var float shortImpulseLow = na
+var bool shortReady = false
+var float shortEntry = na
+var float shortSL = na
+
+if wpr > wprOverbought and not shortArmed and strategy.position_size >= 0
+    shortArmed := true
+    shortBreaks := 0
+    shortTrackHigh := high
+if wpr < wprOversold
+    if shortReady and strategy.position_size >= 0
+        strategy.cancel("Short")
+    shortArmed := false
+    shortBreaks := 0
+    shortReady := false
+
+if shortArmed and shortBreaks == 0
+    shortTrackHigh := na(shortTrackHigh) ? high : math.max(shortTrackHigh, high)
+if shortArmed and shortBreaks == 1
+    shortTrackHigh := na(shortTrackHigh) ? high : math.max(shortTrackHigh, high)
+
+if shortArmed and shortBreaks == 1 and bar_index - shortBreak1Bar > maxBarsBetween
+    shortBreaks := 0
+    shortBreak1High := na
+    shortTrackHigh := high
+
+if shortArmed and breakDown and strategy.position_size >= 0
+    if shortBreaks == 0
+        shortBreak1High := math.max(nz(shortTrackHigh, high), high)
+        shortBreak1Bar := bar_index
+        shortBreaks := 1
+        shortTrackHigh := high
+    else if shortBreaks == 1
+        break2High = math.max(nz(shortTrackHigh, high), high)
+        if break2High > shortBreak1High
+            shortBrokenSup := brokenSup
+            shortBreak2Bar := bar_index
+            shortImpulseHigh := break2High
+            shortImpulseLow := low
+            shortBreaks := 2
+        else
+            shortBreak1High := break2High
+            shortBreak1Bar := bar_index
+            shortBreaks := 1
+            shortTrackHigh := high
+
+if shortBreaks == 2 and not shortReady
+    shortImpulseLow := math.min(nz(shortImpulseLow, low), low)
+    if shortBrokenSup - shortImpulseLow >= minImpulseATR * atrV
+        shortReady := true
+        shortEntry := shortBrokenSup
+        shortSL := shortImpulseLow + fiboSL * (shortImpulseHigh - shortImpulseLow)
+    if bar_index - shortBreak2Bar > pendingExpiry or close > shortImpulseHigh
+        shortBreaks := 0
+        shortReady := false
+
+if shortReady and strategy.position_size >= 0 and close < shortEntry
+    newLow = math.min(shortImpulseLow, low)
+    if newLow < shortImpulseLow
+        shortImpulseLow := newLow
+        shortSL := shortImpulseLow + fiboSL * (shortImpulseHigh - shortImpulseLow)
+
+if shortReady and strategy.position_size >= 0 and (bar_index - shortBreak2Bar > pendingExpiry or close > shortSL)
+    shortReady := false
+    shortBreaks := 0
+    strategy.cancel("Short")
+
+if shortReady and strategy.position_size >= 0
+    strategy.entry("Short", strategy.short, limit=shortEntry - retestTolATR * atrV)
+
+// ---------- Quản lý lệnh đang mở: SL / trailing / TP theo %R ----------
+var float longTrailSL = na
+var float shortTrailSL = na
+inLong  = strategy.position_size > 0
+inShort = strategy.position_size < 0
+
+// Vừa vào lệnh: khóa arm lại (lệnh sau cần 1 chu kỳ %R quá bán/quá mua mới), reset đếm phá.
+if inLong and strategy.position_size[1] <= 0
+    longArmed := false
+    longBreaks := 0
+    longReady := false
+    longTrailSL := longSL
+if inShort and strategy.position_size[1] >= 0
+    shortArmed := false
+    shortBreaks := 0
+    shortReady := false
+    shortTrailSL := shortSL
+
+if inLong and useTrail
+    longTrailSL := math.max(nz(longTrailSL, longSL), high - trailATR * atrV)
+if inShort and useTrail
+    shortTrailSL := math.min(nz(shortTrailSL, shortSL), low + trailATR * atrV)
+
+if inLong
+    strategy.exit("LongExit", "Long", stop=nz(longTrailSL, longSL))
+if inShort
+    strategy.exit("ShortExit", "Short", stop=nz(shortTrailSL, shortSL))
+
+// TP theo %R: Long khi %R cắt lên trên -20, Short khi %R cắt xuống dưới -80.
+if inLong and ta.crossover(wpr, tpWprLong)
+    strategy.close("Long", comment="TP: WPR > -20")
+if inShort and ta.crossunder(wpr, tpWprShort)
+    strategy.close("Short", comment="TP: WPR < -80")
+
+// ---------- Hiển thị ----------
+plotshape(longBreaks == 1 and breakUp, "Phá 1 Long", shape.triangleup, location.belowbar, color.new(color.teal, 0), size=size.small)
+plotshape(longBreaks == 2 and breakUp, "Phá 2 Long", shape.triangleup, location.belowbar, color.new(color.green, 0), size=size.small)
+plotshape(shortBreaks == 1 and breakDown, "Phá 1 Short", shape.triangledown, location.abovebar, color.new(color.orange, 0), size=size.small)
+plotshape(shortBreaks == 2 and breakDown, "Phá 2 Short", shape.triangledown, location.abovebar, color.new(color.red, 0), size=size.small)
+plotshape(longReady and strategy.position_size <= 0, "Chờ hồi về Long", shape.labeldown, location.top, color.new(color.green, 0), text="CHO HOI VE", textcolor=color.white, size=size.tiny)
+plotshape(shortReady and strategy.position_size >= 0, "Chờ hồi về Short", shape.labelup, location.bottom, color.new(color.red, 0), text="CHO HOI VE", textcolor=color.white, size=size.tiny)
+plot(longReady ? longEntry : na, "Entry Long", color.new(color.green, 0), style=plot.style_linebr, linewidth=1)
+plot(longReady ? longSL : na, "SL Long (fibo 80)", color.new(color.red, 0), style=plot.style_linebr, linewidth=1)
+plot(shortReady ? shortEntry : na, "Entry Short", color.new(color.red, 0), style=plot.style_linebr, linewidth=1)
+plot(shortReady ? shortSL : na, "SL Short (fibo 80)", color.new(color.red, 0), style=plot.style_linebr, linewidth=1)
+bgcolor(longArmed ? color.new(color.teal, 95) : na, title="Arm Long: WPR từng < -80")
+bgcolor(shortArmed ? color.new(color.red, 95) : na, title="Arm Short: WPR từng > -20")
+
+var table dbg = table.new(position.top_right, 2, 6, bgcolor=color.new(color.black, 60))
+if barstate.islast
+    table.cell(dbg, 0, 0, "WPR(89)", text_color=color.white)
+    table.cell(dbg, 1, 0, str.tostring(wpr, "#.##"), text_color=color.white)
+    table.cell(dbg, 0, 1, "Arm Long", text_color=color.white)
+    table.cell(dbg, 1, 1, str.tostring(longArmed), text_color=color.white)
+    table.cell(dbg, 0, 2, "Phá Long", text_color=color.white)
+    table.cell(dbg, 1, 2, str.tostring(longBreaks), text_color=color.white)
+    table.cell(dbg, 0, 3, "Arm Short", text_color=color.white)
+    table.cell(dbg, 1, 3, str.tostring(shortArmed), text_color=color.white)
+    table.cell(dbg, 0, 4, "Phá Short", text_color=color.white)
+    table.cell(dbg, 1, 4, str.tostring(shortBreaks), text_color=color.white)
+    table.cell(dbg, 0, 5, "Res / Sup", text_color=color.white)
+    table.cell(dbg, 1, 5, str.tostring(activeRes, "#.####") + " / " + str.tostring(activeSup, "#.####"), text_color=color.white)
