@@ -32,16 +32,140 @@
     return GoldData.resample(state.m1, minutes);
   }
 
-  function refreshChart() {
+  function refreshChart(preserveView) {
     state.candles = currentCandles();
     const r = state.result;
     if (r) {
-      chart.setData(state.candles, r.plots, r.plotMeta, { labels: r.labels, lines: r.lines, boxes: r.boxes }, r.trades || []);
+      chart.setData(state.candles, r.plots, r.plotMeta, { labels: r.labels, lines: r.lines, boxes: r.boxes }, r.trades || [], { preserveView: !!preserveView });
     } else {
-      chart.setData(state.candles, {}, {}, {}, []);
+      chart.setData(state.candles, {}, {}, {}, [], { preserveView: !!preserveView });
     }
+    // Built-in indicators: recomputed on the current timeframe series, drawn
+    // as bar-indexed series alongside the Pine plots.
+    const indSeries = GoldIndicators.computeAll(state.candles, state.activeIndicators);
+    chart.setIndicators(indSeries);
+    renderIndLegend(indSeries);
     renderTables(r);
     $('barCount').textContent = `${fmtInt(state.candles.n)} bars · ${state.symbol} ${state.tf}`;
+  }
+
+  // ---------- Built-in indicators ----------
+  const IND_LS_KEY = 'gold-pine-lab:indicators';
+  function saveIndicators() {
+    try { localStorage.setItem(IND_LS_KEY, JSON.stringify(state.activeIndicators)); } catch (e) { /* ignore */ }
+  }
+  function loadIndicators() {
+    try {
+      const raw = localStorage.getItem(IND_LS_KEY);
+      const arr = raw ? JSON.parse(raw) : [];
+      state.activeIndicators = Array.isArray(arr)
+        ? arr.filter((a) => a && GoldIndicators.defs.some((d) => d.id === a.id)).map((a) => ({ id: a.id, params: a.params || {} }))
+        : [];
+    } catch (e) { state.activeIndicators = []; }
+  }
+  function indLabel(a) {
+    const def = GoldIndicators.defs.find((d) => d.id === a.id);
+    if (!def) return a.id;
+    const p = { ...GoldIndicators.defaults(def), ...(a.params || {}) };
+    const parts = def.params.map((par) => p[par.key]);
+    return `${def.name} ${parts.join(' ')}`;
+  }
+  function renderIndLegend(indSeries) {
+    const el = $('indLegend');
+    if (!el) return;
+    el.innerHTML = '';
+    state.activeIndicators.forEach((a, i) => {
+      const def = GoldIndicators.defs.find((d) => d.id === a.id);
+      if (!def) return;
+      const chip = document.createElement('span');
+      chip.className = 'ind-chip';
+      const first = (indSeries || []).find((s) => s.owner === i);
+      const dot = document.createElement('i');
+      dot.style.background = (first && first.color) || '#2962ff';
+      chip.appendChild(dot);
+      const txt = document.createElement('span');
+      txt.textContent = indLabel(a);
+      chip.appendChild(txt);
+      const x = document.createElement('b');
+      x.textContent = '✕';
+      x.title = 'Remove indicator';
+      x.onclick = (ev) => { ev.stopPropagation(); removeIndicator(i); };
+      chip.appendChild(x);
+      el.appendChild(chip);
+    });
+  }
+  function renderIndPanel() {
+    const panel = $('indPanel');
+    if (!panel) return;
+    panel.innerHTML = '';
+    const h1 = document.createElement('div');
+    h1.className = 'ind-panel-title';
+    h1.textContent = 'Add indicator';
+    panel.appendChild(h1);
+    for (const def of GoldIndicators.defs) {
+      const b = document.createElement('button');
+      b.className = 'ind-add';
+      b.textContent = def.name + (def.overlay ? ' (overlay)' : ' (pane)');
+      b.onclick = () => { addIndicator(def.id); };
+      panel.appendChild(b);
+    }
+    if (state.activeIndicators.length) {
+      const h2 = document.createElement('div');
+      h2.className = 'ind-panel-title';
+      h2.textContent = 'Active — click a value to change it';
+      panel.appendChild(h2);
+      state.activeIndicators.forEach((a, i) => {
+        const def = GoldIndicators.defs.find((d) => d.id === a.id);
+        if (!def) return;
+        const row = document.createElement('div');
+        row.className = 'ind-row';
+        const nm = document.createElement('span');
+        nm.className = 'ind-row-name';
+        nm.textContent = def.name;
+        row.appendChild(nm);
+        const params = { ...GoldIndicators.defaults(def), ...(a.params || {}) };
+        for (const par of def.params) {
+          const inp = document.createElement('input');
+          inp.type = 'number';
+          inp.title = par.label;
+          inp.value = params[par.key];
+          inp.min = par.min; inp.max = par.max; inp.step = par.step;
+          inp.onchange = () => {
+            let v = parseFloat(inp.value);
+            if (!isFinite(v)) v = par.def;
+            v = Math.min(par.max, Math.max(par.min, v));
+            inp.value = v;
+            a.params = { ...params, [par.key]: v };
+            saveIndicators();
+            refreshChart(true);
+            renderIndPanel();
+          };
+          row.appendChild(inp);
+        }
+        const x = document.createElement('button');
+        x.className = 'ind-remove';
+        x.textContent = '✕';
+        x.title = 'Remove';
+        x.onclick = () => removeIndicator(i);
+        row.appendChild(x);
+        panel.appendChild(row);
+      });
+    }
+  }
+  function addIndicator(id) {
+    const def = GoldIndicators.defs.find((d) => d.id === id);
+    if (!def) return;
+    state.activeIndicators.push({ id, params: GoldIndicators.defaults(def) });
+    saveIndicators();
+    refreshChart(true);
+    renderIndPanel();
+    setStatus(`Added ${def.name} — see the chart legend (top-left) to remove it.`);
+  }
+  function removeIndicator(i) {
+    state.activeIndicators.splice(i, 1);
+    saveIndicators();
+    refreshChart(true);
+    renderIndPanel();
   }
 
   function renderTables(r) {
@@ -379,6 +503,26 @@
   async function init() {
     chart = new GoldChart($('chartMain'), $('chartOsc'));
     chart.onHover = () => {};
+    loadIndicators();
+    // Indicators button: dropdown with the built-in library + active list.
+    $('indBtn').onclick = (e) => {
+      e.stopPropagation();
+      const p = $('indPanel');
+      const open = p.style.display !== 'block';
+      if (open) {
+        renderIndPanel();
+        const r = $('indBtn').getBoundingClientRect();
+        p.style.left = Math.max(8, r.left) + 'px';
+        p.style.top = (r.bottom + 6) + 'px';
+        p.style.display = 'block';
+      } else {
+        p.style.display = 'none';
+      }
+    };
+    document.addEventListener('click', (e) => {
+      const p = $('indPanel');
+      if (p && p.style.display === 'block' && !$('indBtn').contains(e.target) && !p.contains(e.target)) p.style.display = 'none';
+    });
     $('runBtn').onclick = () => runScript(false); // doubles as Cancel while running
     $('runFullBtn').onclick = () => runScript(true);
     $('saveBtn').onclick = saveScript;
@@ -426,7 +570,7 @@
       if (res.ok) state.m1 = res.data;
       updateSpotChip(res);
       setDataStatus();
-      refreshChart();
+      refreshChart(true); // live must not snap the zoom/pan back to 300 bars
     }
     function stopLive() {
       state.liveOn = false;

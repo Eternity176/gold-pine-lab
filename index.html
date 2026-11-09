@@ -25,6 +25,7 @@
     <button data-ctype="area">Area</button>
   </div>
   <div class="sep"></div>
+  <button id="indBtn" title="Built-in indicators (MA, EMA, Bollinger, RSI, MACD, Stochastic, ATR, Supertrend) — click to add, no Pine needed.">fx Indicators</button>
   <button id="runBtn" class="primary">▶ Run</button>
   <button id="saveBtn">Save</button>
   <button id="liveBtn" title="Live XAU/USD 1m candles (Dukascopy spot → Yahoo GC=F futures), auto-refresh 15s. Spot XAU via gold-api.com.">● Live data</button>
@@ -43,6 +44,7 @@
   <div id="chartArea">
     <div id="chartWrap">
       <canvas id="chartMain"></canvas>
+      <div id="indLegend"></div>
       <div id="tableOverlay"></div>
       <div id="barCount"></div>
       <div id="dataStatus">No data</div>
@@ -124,12 +126,17 @@
     <p>Default: bundled <code>data/2023–2025</code> (20.17 MB total; 352,949 + 355,787 + 299,838 bars = 1,008,574), shipped as base64 chunks (<code>data/manifest.json</code> + <code>data/*.b64.N</code>) with the original <code>.bin</code> files as a local-dev fallback, cached in IndexedDB after first load. Dukascopy V1 datafeed JSONP is DEAD (429/301 since 2026-11-09) — live now uses the Dukascopy json3 endpoint (freeserv.dukascopy.com) instead. TV UDF demo, Binance.com, Twelve/Alpha/OANDA are NOT used (see ANALYSIS.md §3 for the measured reasons).</p>
     <h2>Speed — preview vs full run</h2>
     <p><b>Run</b> previews only the last 20,000 bars (~1–2s) so signals appear on the chart immediately. The compiled Pine script is cached in the worker, so switching preview ↔ full does not recompile. <b>Run full history (1M)</b> runs all 1,008,574 bars (~45–55s) and is the only run that produces real Strategy Tester / 8-gate numbers; opening the Strategy Tester tab with only a preview result starts a full run automatically. While a run is in progress, <b>Run doubles as Cancel</b> (terminates the worker) and the status bar shows elapsed time. Full-history numbers are unchanged by the speed work: R7 base variant still gives 2,502 trades, PF 0.696, net −$9,983.40 (parity, see PARITY.md).</p>
+    <h2>Built-in indicators (fx Indicators button, top bar)</h2>
+    <p>No Pine needed: <b>Moving Average, EMA, Bollinger Bands, RSI, MACD, Stochastic, ATR, Supertrend</b>. Overlays draw on the price pane, oscillators get their own pane each (own scale). Click an active indicator's chip (top-left of the chart) or change its numbers in the panel to edit/remove it. Indicators follow timeframe changes and live updates, and are saved in localStorage. Formulas match Pine <code>ta.*</code> (EMA/RMA seeded with the first value, population std for Bollinger). VWAP is not included — the bundled data has no volume (OHLC only). Recomputing all indicators on the full 1M-bar series takes ~0.5s; the wheel zoom itself stays instant because plots are drawn from the visible window only.</p>
     <h2>Keyboard / mouse</h2>
-    <p>Drag chart to scroll · wheel to zoom · double-click to reset view · “Show full history” (⤢) to see all 1M bars downsampled.</p>
+    <p>Drag chart to scroll · wheel zooms to the cursor (scroll up = zoom in, like TradingView; trackpad scrolls are smooth, one flick no longer jumps to 20 or 20,000 bars) · wheel also works over the oscillator pane · double-click to reset view · “Show full history” (⤢) to see all 1M bars downsampled. Live updates keep your zoom/pan — they no longer snap back to the last 300 bars.</p>
   </div>
 </section>
 
+<div id="indPanel" style="display:none"></div>
+
 <script src="data.js"></script>
+<script src="indicators.js"></script>
 <script src="chart.js"></script>
 <script src="app.js"></script>
 </body>

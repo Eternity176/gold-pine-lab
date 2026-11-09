@@ -55,6 +55,22 @@ input:focus, select:focus, textarea:focus { outline: 1px solid var(--accent); }
 #dataStatus { position: absolute; left: 8px; bottom: 6px; z-index: 5; font-size: 11px; color: var(--dim); background: rgba(19, 23, 34, 0.85); padding: 2px 6px; border-radius: 3px; pointer-events: none; }
 #barCount { position: absolute; right: 70px; top: 6px; z-index: 5; font-size: 11px; color: var(--dim); background: rgba(19, 23, 34, 0.85); padding: 2px 6px; border-radius: 3px; pointer-events: none; }
 
+/* ---- built-in indicators ---- */
+#indLegend { position: absolute; left: 8px; top: 26px; z-index: 5; display: flex; gap: 4px; flex-wrap: wrap; max-width: 70%; pointer-events: none; }
+.ind-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text); background: rgba(30, 34, 45, 0.92); border: 1px solid var(--border); border-radius: 3px; padding: 2px 6px; pointer-events: auto; }
+.ind-chip i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.ind-chip b { color: var(--dim); cursor: pointer; font-weight: 400; margin-left: 2px; }
+.ind-chip b:hover { color: #fff; }
+#indPanel { position: fixed; z-index: 50; width: 280px; max-height: 70vh; overflow: auto; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5); padding: 8px; }
+.ind-panel-title { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.4px; margin: 6px 2px 4px; }
+.ind-panel-title:first-child { margin-top: 0; }
+.ind-add { display: block; width: 100%; text-align: left; background: transparent; border: none; border-radius: 4px; padding: 7px 8px; color: var(--text); }
+.ind-add:hover { background: var(--panel2); }
+.ind-row { display: flex; align-items: center; gap: 4px; padding: 5px 2px; border-top: 1px solid var(--border); }
+.ind-row-name { flex: 1; font-size: 12px; }
+.ind-row input[type=number] { width: 56px; padding: 3px 6px; font-size: 12px; }
+.ind-remove { padding: 3px 7px; font-size: 11px; }
+
 /* ---- bottom panel ---- */
 #bottom { height: 38vh; min-height: 260px; border-top: 1px solid var(--border); background: var(--panel); display: flex; flex-direction: column; flex: 0 0 auto; }
 #bottomTabs { display: flex; gap: 2px; padding: 0 8px; border-bottom: 1px solid var(--border); flex: 0 0 auto; }
