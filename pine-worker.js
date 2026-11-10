@@ -54,14 +54,31 @@ const MAX_CURVE_POINTS = 5000;
 function isValid(v) { return v !== null && v !== undefined && typeof v === 'number' && !Number.isNaN(v); }
 
 function downsamplePlot(data, maxPts) {
-  // data: [{time, value}] — keep stride sampling + always keep last point.
+  // data: [{time, value, options?}] — keep stride sampling + always keep
+  // last point. Per-point options are preserved: `c` = the point's own
+  // color (PineTS puts series colors here, e.g. a Smart Trail that is
+  // green when up and red when down), `text`/`shape`/`loc` = plotshape
+  // metadata (label glyph, shape kind, AboveBar/BelowBar). Without these
+  // the chart can only draw one flat color per plot and cannot tell a
+  // barcolor plot (values all `true`) from a plotshape.
+  const mapPt = (p) => {
+    const o = { t: p.time, v: p.value };
+    const po = p.options;
+    if (po) {
+      if (po.color) o.c = po.color;
+      if (po.text) o.text = po.text;
+      if (po.shape) o.shape = po.shape;
+      if (po.location) o.loc = po.location;
+    }
+    return o;
+  };
   const n = data.length;
-  if (n <= maxPts) return data.map((p) => ({ t: p.time, v: p.value }));
+  if (n <= maxPts) return data.map(mapPt);
   const stride = Math.ceil(n / maxPts);
   const out = [];
-  for (let i = 0; i < n; i += stride) out.push({ t: data[i].time, v: data[i].value });
+  for (let i = 0; i < n; i += stride) out.push(mapPt(data[i]));
   const last = data[n - 1];
-  if (out[out.length - 1].t !== last.time) out.push({ t: last.time, v: last.value });
+  if (out[out.length - 1].t !== last.time) out.push(mapPt(last));
   return out;
 }
 
@@ -118,7 +135,12 @@ self.onmessage = async (e) => {
       if (key.startsWith('__')) continue; // drawings/tables handled separately
       const p = ctx.plots[key];
       const data = p.data || [];
-      plots[key] = downsamplePlot(data, MAX_PLOT_POINTS);
+      // Boolean plots (plotshape / barcolor) carry no information in their
+      // `false` points — the chart skips them. Filter to `true` only before
+      // downsampling so stride sampling can never drop a real signal.
+      const isBoolPlot = data.some((d) => d.value === true || d.value === false);
+      const plotData = isBoolPlot ? data.filter((d) => d.value === true) : data;
+      plots[key] = downsamplePlot(plotData, MAX_PLOT_POINTS);
       plotMeta[key] = { title: p.title || key, overlay: p.options ? p.options.overlay !== false : true, color: p.options && p.options.color, style: p.options && p.options.style, ...seriesStats(data) };
     }
     // Drawings: PineTS keeps only the FINAL active set (single-entry series).

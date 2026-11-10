@@ -163,6 +163,28 @@
         if (pts.some((p) => p.v === true || p.v === false)) continue; // plotshape: keep points
         this._plotVals[key] = this._indexPlot(pts);
       }
+      // Per-bar colors for line plots whose color is a series (Smart Trail
+      // green/red) — the worker keeps each point's own color in `c`.
+      this._plotCols = {};
+      for (const key of Object.keys(this.plots)) {
+        const pts = this.plots[key];
+        if (!pts.some((p) => typeof p.c === 'string')) continue;
+        if (pts.some((p) => p.v === true || p.v === false)) continue; // barcolor handled below
+        this._plotCols[key] = this._indexColors(pts);
+      }
+      // barcolor: PineTS gives values all `true` with the color per point.
+      // Merge every barcolor plot into one per-bar color array (last plot
+      // wins, like TradingView) and use it to tint the candles. This must
+      // live apart from plotshape: the old code saw `v === true` on every
+      // bar and drew a green triangle under every candle.
+      this._barColor = null;
+      for (const key of Object.keys(this.plots)) {
+        const m = this.plotMeta[key];
+        if (!m || m.style !== 'barcolor') continue;
+        if (!this._barColor) this._barColor = new Array(candles.n).fill(null);
+        const cols = this._indexColors(this.plots[key]);
+        for (let i = 0; i < candles.n; i++) if (cols[i]) this._barColor[i] = cols[i];
+      }
       if (keep) {
         // Live updates must not snap the view back to the last 300 bars:
         // stay at the right edge if we were there (keeping the user's
@@ -186,6 +208,20 @@
         const target = Math.floor(p.t / 60000);
         while (j < n && times[j] < target) j++;
         if (j < n && times[j] === target) arr[j] = p.v;
+      }
+      return arr;
+    }
+    // Same linear merge as _indexPlot, but for per-point colors (`c`):
+    // returns an Array of color strings (or null) per bar index.
+    _indexColors(pts) {
+      const n = this.candles.n, times = this.candles.times;
+      const arr = new Array(n).fill(null);
+      let j = 0;
+      for (const p of pts) {
+        if (typeof p.c !== 'string') continue;
+        const target = Math.floor(p.t / 60000);
+        while (j < n && times[j] < target) j++;
+        if (j < n && times[j] === target) arr[j] = p.c;
       }
       return arr;
     }
@@ -282,7 +318,10 @@
       const bw = Math.max(1, Math.min(14, this.barW * 0.7));
       for (let i = start; i <= dataEnd; i++) {
         const x = xOf(i), up = c.close[i] >= c.open[i];
-        ctx.strokeStyle = ctx.fillStyle = up ? UP : DOWN;
+        // barcolor() tints the candle body (last barcolor plot wins);
+        // without it, candles are green/red by close vs open.
+        const bc = this._barColor && this._barColor[i];
+        ctx.strokeStyle = ctx.fillStyle = bc || (up ? UP : DOWN);
         ctx.beginPath(); ctx.moveTo(x, yOf(c.high[i])); ctx.lineTo(x, yOf(c.low[i])); ctx.stroke();
         const yo = yOf(c.open[i]), yc = yOf(c.close[i]);
         ctx.fillRect(x - bw / 2, Math.min(yo, yc), bw, Math.max(1, Math.abs(yc - yo)));
@@ -293,19 +332,52 @@
       for (const key of Object.keys(this.plots)) {
         const m = this.plotMeta[key];
         if (m && m.overlay === false) continue;
+        if (m && m.style === 'barcolor') continue; // tints candles (see _barColor), never drawn as a plot
         const pts = this.plots[key];
         const color = cssColor(m && m.color, PALETTE[pi++ % PALETTE.length]);
         const isBool = pts.some((p) => p.v === true || p.v === false);
         if (isBool) {
-          // plotshape: triangle above high (red-ish) or below low (green-ish)
+          // plotshape: one marker per `true` point. The point's own metadata
+          // (shape/location/text/color, kept by the worker) decides how it
+          // looks — a labelup/labeldown draws the small colored box with its
+          // glyph (▲/▼/▲+/▼+, like LuxAlgo), an xcross draws an X, anything
+          // else falls back to a plain triangle.
           for (const p of pts) {
             if (p.v !== true) continue;
             const bi = this._barIndexOfTime(p.t);
-            if (bi === null || bi < start || bi > end) continue;
+            if (bi === null || bi < start || bi > dataEnd) continue;
             const x = xOf(bi);
+            const shape = (p.shape || '').toLowerCase();
+            const loc = (p.loc || '').toLowerCase();
+            const col = (typeof p.c === 'string' && p.c) || color;
+            const below = /below/i.test(loc) || (!loc && !/short|sell|red/i.test(key));
+            const yBase = below ? yOf(c.low[bi]) + 11 : yOf(c.high[bi]) - 11;
+            if (shape.includes('xcross')) {
+              ctx.strokeStyle = col; ctx.lineWidth = 1.6;
+              ctx.beginPath();
+              ctx.moveTo(x - 5, yBase - 5); ctx.lineTo(x + 5, yBase + 5);
+              ctx.moveTo(x + 5, yBase - 5); ctx.lineTo(x - 5, yBase + 5);
+              ctx.stroke();
+              continue;
+            }
+            if (shape.includes('label')) {
+              const text = p.text || (below ? '▲' : '▼');
+              ctx.font = 'bold 10px -apple-system, "Segoe UI", Roboto, sans-serif';
+              const tw = ctx.measureText(text).width;
+              const bw2 = Math.max(13, tw + 6), bh = 13;
+              ctx.fillStyle = col;
+              ctx.beginPath();
+              if (ctx.roundRect) ctx.roundRect(x - bw2 / 2, yBase - bh / 2, bw2, bh, 3);
+              else ctx.rect(x - bw2 / 2, yBase - bh / 2, bw2, bh);
+              ctx.fill();
+              ctx.fillStyle = '#ffffff'; ctx.textAlign = 'center';
+              ctx.fillText(text, x, yBase + 3.5);
+              ctx.textAlign = 'left';
+              continue;
+            }
             const down = /short|sell|red/i.test(key);
             const y = down ? yOf(c.high[bi]) - 10 : yOf(c.low[bi]) + 10;
-            ctx.fillStyle = down ? '#ff1744' : '#00e676';
+            ctx.fillStyle = col;
             ctx.beginPath();
             if (down) { ctx.moveTo(x, y + 5); ctx.lineTo(x - 5, y - 4); ctx.lineTo(x + 5, y - 4); }
             else { ctx.moveTo(x, y - 5); ctx.lineTo(x - 5, y + 4); ctx.lineTo(x + 5, y + 4); }
@@ -313,17 +385,35 @@
           }
           continue;
         }
-        ctx.strokeStyle = color; ctx.lineWidth = 1.2; ctx.beginPath();
-        let started = false;
+        // Numeric line plot. Its color can be a series (Smart Trail green
+        // when up, red when down) — the worker keeps each point's color in
+        // _plotCols, so the line is drawn segment by segment, changing
+        // color where the series does, instead of one flat color.
+        ctx.lineWidth = 1.2;
         const vals = this._plotVals[key];
+        const cols = this._plotCols[key];
         if (vals) {
+          let cur = null, started = false, px = 0, py = 0, havePrev = false;
+          const flush = () => { if (started) ctx.stroke(); started = false; };
           for (let i = start; i <= dataEnd; i++) {
             const v = vals[i];
-            if (typeof v !== 'number' || Number.isNaN(v)) { started = false; continue; }
+            if (typeof v !== 'number' || Number.isNaN(v)) { flush(); cur = null; havePrev = false; continue; }
+            const col = (cols && cols[i]) || color;
             const x = xOf(i), y = yOf(v);
+            if (col !== cur) {
+              flush();
+              cur = col; ctx.strokeStyle = col; ctx.beginPath();
+              // New segment starts at the previous point so it connects;
+              // mark it started so the next lineTo (not moveTo) is used.
+              if (havePrev) { ctx.moveTo(px, py); started = true; }
+            }
             if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+            px = x; py = y; havePrev = true;
           }
+          flush();
         } else {
+          ctx.strokeStyle = color; ctx.beginPath();
+          let started = false;
           for (const p of pts) {
             if (typeof p.v !== 'number' || Number.isNaN(p.v)) { started = false; continue; }
             const bi = this._barIndexOfTime(p.t);
@@ -331,8 +421,8 @@
             const x = xOf(bi), y = yOf(p.v);
             if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
           }
+          ctx.stroke();
         }
-        ctx.stroke();
       }
       // built-in indicator overlays (bar-indexed lines)
       for (const s of this.ind) {
@@ -550,12 +640,24 @@
           };
           if (s.pine) {
             const vals = this._plotVals[s.key];
+            const cols = this._plotCols[s.key];
             if (vals) {
+              // Series colors change mid-line (same as the main pane).
+              let cur = null, havePrev = false;
+              const flush = () => { if (started) ctx.stroke(); started = false; };
               for (let i = start; i <= end; i++) {
                 const v = vals[i];
-                if (typeof v !== 'number' || Number.isNaN(v)) { started = false; continue; }
+                if (typeof v !== 'number' || Number.isNaN(v)) { flush(); cur = null; havePrev = false; continue; }
+                const col = (cols && cols[i]) || color;
+                if (col !== cur) {
+                  flush();
+                  cur = col; ctx.strokeStyle = col; ctx.beginPath();
+                  if (havePrev) { const x = this._xAtIdx(i - 1), y = yOf(vals[i - 1]); ctx.moveTo(x, y); started = true; }
+                }
                 drawPoint(i, v);
+                havePrev = true;
               }
+              flush();
             } else {
               for (const p of this.plots[s.key]) {
                 if (typeof p.v !== 'number' || Number.isNaN(p.v)) { started = false; continue; }
@@ -563,6 +665,7 @@
                 if (bi === null || bi < start || bi > end) { started = false; continue; }
                 drawPoint(bi, p.v);
               }
+              ctx.stroke();
             }
           } else {
             for (let i = start; i <= end; i++) {
@@ -570,8 +673,8 @@
               if (typeof val !== 'number' || Number.isNaN(val)) { started = false; continue; }
               drawPoint(i, val);
             }
+            ctx.stroke();
           }
-          ctx.stroke();
         }
         // pane separator + legend
         if (gi > 0) {
