@@ -12,7 +12,7 @@
 //  broker rejects the order (PineTS verified: qty 10oz on $10k = 0 fills).
 //  One position at a time (entry only when flat).
 // ============================================================================
-strategy("R7 EMA12(%R34) ref", overlay=true, initial_capital=10000,
+strategy("R7 EMA12(%R34) ref", overlay=false, initial_capital=10000,
   currency=currency.USD, default_qty_type=strategy.fixed, default_qty_value=1,
   commission_type=strategy.commission.cash_per_contract, commission_value=0.055,
   slippage=0, pyramiding=1, margin_long=1, margin_short=1,
