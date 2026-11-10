@@ -7,6 +7,13 @@
 // Plots are downsampled to <= 20000 points per series for postMessage size;
 // trades + equity curve are returned in full (trades) / downsampled (curve).
 //
+// MAINTENANCE: when you change this file, also bump WORKER_VERSION in app.js.
+// The worker is created once per page load and REUSED for every run, so a
+// browser tab opened before the deploy keeps running the OLD worker until
+// the page reloads — and the ?v= query forces a fresh fetch even then
+// (2026-11-10: a stale pre-closeTime worker showed signals in old history
+// but zero in realtime, exactly the pre-fix bug).
+//
 // Speed (2026-11-09): the worker is REUSED across runs (app.js keeps one
 // worker alive) and the compiled Pine script is cached — changing the data
 // window (preview 20k <-> full 1M) does NOT recompile. PineTS exposes this

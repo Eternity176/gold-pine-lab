@@ -204,9 +204,13 @@
   // One worker is kept alive across runs: it caches the compiled Pine script,
   // so changing the data window (preview <-> full) does not recompile.
   // Cancel = terminate the worker (the cache is lost, the next run recompiles).
+  // WORKER_VERSION: bump this whenever pine-worker.js changes. The worker is
+  // created once per page load and reused, so without the ?v= query a tab
+  // opened before a deploy keeps the OLD worker (stale logic) until reload.
+  const WORKER_VERSION = '20261110-closeTime';
   function getWorker() {
     if (worker) return worker;
-    worker = new Worker('pine-worker.js');
+    worker = new Worker('pine-worker.js?v=' + WORKER_VERSION);
     worker.onmessage = (e) => {
       const msg = e.data;
       if (msg.type === 'progress') { setStatus(msg.msg + runElapsed()); return; }
