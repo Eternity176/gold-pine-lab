@@ -1,0 +1,278 @@
+//@version=6
+// ============================================================================
+//  GOLD TREND TRAIL — XAUUSD Strategy
+//  Regime-gated adaptive ATR trail + EMA momentum + pivot S/R room filter
+//  + RSI no-chase filter. Risk-based sizing, partial TP, trail as stop.
+//  Signals on bar close, fills on next open. Built for 15m–1H XAUUSD.
+//  Backtests are not forecasts: tune, forward-test, set slippage to your broker.
+// ============================================================================
+strategy("Gold Trend Trail Strategy [XAUUSD]", "GOLD TRAIL", overlay = true,
+     max_bars_back = 1000, max_labels_count = 500, max_lines_count = 500,
+     initial_capital = 10000, default_qty_type = strategy.fixed, default_qty_value = 1,
+     pyramiding = 0, slippage = 20, margin_long = 5, margin_short = 5,
+     calc_on_every_tick = false, process_orders_on_close = false)
+
+// ── PALETTE ──────────────────────────────────────────────────────────────
+UP      = #00F5D4
+DN      = #FF2E88
+UP_DEEP = #0A5F55
+DN_DEEP = #8E1148
+SLEEP   = #6B7688
+SLEEP_D = #414C5C
+GOLD    = #FFB938
+CARD    = #131A24
+CARD_2  = #1B2431
+TXT     = #F1F5F9
+MUTE    = #94A3B8
+
+// ── INPUTS ───────────────────────────────────────────────────────────────
+gT       = "Trail"
+atrLen   = input.int(14, "ATR length", minval = 2, maxval = 100, group = gT)
+baseMlt  = input.float(2.6, "Base trail distance (ATR)", minval = 0.5, maxval = 10, step = 0.1, group = gT)
+adaptAmt = input.float(0.6, "Efficiency adaptation", minval = 0.0, maxval = 1.5, step = 0.05, group = gT, tooltip = "Widens the trail when efficiency is low (chop).")
+volAmt   = input.float(0.5, "Volatility adaptation", minval = 0.0, maxval = 1.5, step = 0.05, group = gT, tooltip = "Widens the trail when current ATR ranks high versus its own history.")
+volLook  = input.int(100, "Volatility rank window", minval = 20, maxval = 500, group = gT)
+
+gR       = "Regime"
+erLen    = input.int(20, "Efficiency lookback", minval = 5, maxval = 200, group = gR)
+rankLook = input.int(200, "Self-calibration window", minval = 50, maxval = 1000, group = gR)
+rankMin  = input.int(65, "Arms above percentile", minval = 30, maxval = 95, group = gR)
+hyst     = input.int(15, "Hysteresis", minval = 0, maxval = 40, group = gR)
+dwell    = input.int(15, "Minimum bars per regime", minval = 1, maxval = 200, group = gR)
+
+gM       = "Momentum"
+useMom   = input.bool(true, "Require EMA agreement", group = gM)
+momLen   = input.int(50, "Momentum EMA", minval = 2, group = gM)
+
+gSR      = "Support / Resistance + RSI"
+useSR    = input.bool(true, "Room-to-run filter (pivot S/R)", group = gSR)
+pivLen   = input.int(5, "Pivot strength (left/right bars)", minval = 1, maxval = 30, group = gSR)
+roomATR  = input.float(1.0, "Minimum room to opposing level (ATR)", minval = 0.0, maxval = 5.0, step = 0.1, group = gSR, tooltip = "A long needs this much distance below the latest resistance pivot. A short needs it above the latest support pivot. A level already broken through does not block.")
+useRSI   = input.bool(true, "Don't chase stretched RSI", group = gSR)
+rsiLen   = input.int(14, "RSI length", minval = 2, group = gSR)
+rsiHiCap = input.int(72, "No longs above RSI", minval = 50, maxval = 95, group = gSR)
+rsiLoCap = input.int(28, "No shorts below RSI", minval = 5, maxval = 50, group = gSR)
+srExtend = input.int(25, "S/R line length (bars)", minval = 1, group = gSR)
+
+gRisk    = "Risk & Exits"
+riskPct  = input.float(1.0, "Risk per trade (% equity)", minval = 0.05, maxval = 10, step = 0.05, group = gRisk)
+maxLev   = input.float(10.0, "Max leverage cap", minval = 1, maxval = 20, step = 0.5, group = gRisk, tooltip = "Position size is capped so notional never exceeds equity times this number. Must stay under the strategy's 20x margin setting.")
+tp1R     = input.float(1.2, "TP1 (R multiple)", minval = 0.3, maxval = 10, step = 0.1, group = gRisk)
+tp1Pct   = input.float(50.0, "Close at TP1 (%)", minval = 10, maxval = 90, step = 5, group = gRisk)
+tp2R     = input.float(3.0, "TP2 (R multiple)", minval = 0.5, maxval = 20, step = 0.1, group = gRisk)
+minRatr  = input.float(0.5, "Min stop distance (ATR)", minval = 0.1, maxval = 3, step = 0.1, group = gRisk, tooltip = "Skip entries where the trail sits too close to price to be a sensible stop.")
+dormExit = input.bool(false, "Exit when regime goes dormant", group = gRisk)
+
+gSes     = "Session"
+useSes   = input.bool(true, "Only open trades inside session", group = gSes)
+sesStr   = input.session("0200-1600", "Session (New York time)", group = gSes, tooltip = "London open through the NY afternoon. Open trades are managed outside the window.")
+
+gV       = "Visuals"
+glowOn   = input.bool(true, "Soft glow", group = gV)
+fillOn   = input.bool(true, "Fill to price", group = gV)
+candOn   = input.bool(false, "Regime candles (dim when dormant)", group = gV)
+srOn     = input.bool(false, "Draw pivot S/R lines", group = gV)
+lblOn    = input.bool(true, "Entry labels", group = gV)
+lblStop  = input.bool(false, "Show stop price on label", group = gV)
+lvlOn    = input.bool(true, "Show stop / targets while in trade", group = gV)
+showHUD  = input.bool(true, "Dashboard", group = gV)
+hudPos   = input.string("Bottom Right", "Dashboard position", options = ["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right"], group = gV)
+
+// ── REGIME ───────────────────────────────────────────────────────────────
+netMove = math.abs(close - close[erLen])
+pathLen = math.sum(math.abs(close - close[1]), erLen)
+er      = pathLen > 0 ? netMove / pathLen : 0.0
+erRank  = ta.percentrank(er, rankLook)
+
+var bool armed = false
+var int  swBar = 0
+canSwitch = bar_index - swBar >= dwell
+
+if not na(erRank)
+    if not armed and canSwitch and erRank >= rankMin and nz(erRank[1], 0) >= rankMin
+        armed := true
+        swBar := bar_index
+    else if armed and canSwitch and erRank < rankMin - hyst
+        armed := false
+        swBar := bar_index
+
+trending = armed
+
+var bool wasTrend = false
+regimeClose = bar_index > 0 and not trending and wasTrend
+wasTrend := trending
+
+// ── ADAPTIVE TRAIL (torn down when dormant, rebuilt on regime open) ──────
+atrV  = ta.atr(atrLen)
+volPr = nz(ta.percentrank(atrV, volLook), 50) / 100.0
+mult  = baseMlt * (1.0 + (1.0 - er) * adaptAmt + volPr * volAmt * 0.5)
+
+var float upB = na
+var float dnB = na
+var int   dir = 0
+
+rawUp = hl2 - mult * atrV
+rawDn = hl2 + mult * atrV
+
+if not trending
+    dir := 0
+    upB := na
+    dnB := na
+else if nz(dir[1], 0) == 0
+    dir := close >= close[erLen] ? 1 : -1
+    upB := rawUp
+    dnB := rawDn
+else
+    upB := close[1] > nz(upB[1], rawUp) ? math.max(rawUp, nz(upB[1], rawUp)) : rawUp
+    dnB := close[1] < nz(dnB[1], rawDn) ? math.min(rawDn, nz(dnB[1], rawDn)) : rawDn
+    dir := close > nz(dnB[1], rawDn) ? 1 : close < nz(upB[1], rawUp) ? -1 : nz(dir[1], 1)
+
+trail   = dir == 1 ? upB : dir == -1 ? dnB : na
+entryUp = dir ==  1 and nz(dir[1], 0) !=  1
+entryDn = dir == -1 and nz(dir[1], 0) != -1
+
+// ── MOMENTUM, RSI, PIVOT S/R ─────────────────────────────────────────────
+emaM   = ta.ema(close, momLen)
+rsiV   = ta.rsi(close, rsiLen)
+momLng = not useMom or close >= emaM
+momSht = not useMom or close <= emaM
+
+ph = ta.pivothigh(high, pivLen, pivLen)
+pl = ta.pivotlow(low, pivLen, pivLen)
+
+var float lastPH = na
+var float lastPL = na
+
+if not na(ph)
+    lastPH := ph
+    if srOn
+        line.new(bar_index - pivLen, ph, bar_index - pivLen + srExtend, ph, color = color.new(DN, 45), width = 1)
+if not na(pl)
+    lastPL := pl
+    if srOn
+        line.new(bar_index - pivLen, pl, bar_index - pivLen + srExtend, pl, color = color.new(UP, 45), width = 1)
+
+roomLng = not useSR or na(lastPH) or close >= lastPH or (lastPH - close) >= roomATR * atrV
+roomSht = not useSR or na(lastPL) or close <= lastPL or (close - lastPL) >= roomATR * atrV
+rsiLng  = not useRSI or rsiV <= rsiHiCap
+rsiSht  = not useRSI or rsiV >= rsiLoCap
+
+inSes = not useSes or not na(time(timeframe.period, sesStr, "America/New_York"))
+
+stopDist = math.abs(close - nz(trail, close))
+stopOK   = stopDist >= minRatr * atrV and stopDist > 0
+
+buySig  = barstate.isconfirmed and entryUp and momLng and roomLng and rsiLng and inSes and stopOK
+sellSig = barstate.isconfirmed and entryDn and momSht and roomSht and rsiSht and inSes and stopOK
+
+// ── TRADE MANAGEMENT ─────────────────────────────────────────────────────
+var float slPx  = na
+var float tp1Px = na
+var float tp2Px = na
+
+// exits for the position that exists now (runs before a new signal overwrites levels)
+if strategy.position_size > 0
+    if dir == 1 and not na(trail)
+        slPx := math.max(nz(slPx, trail), trail)
+    strategy.exit("L-TP1", "L", qty_percent = tp1Pct, limit = tp1Px, stop = slPx)
+    strategy.exit("L-TP2", "L", limit = tp2Px, stop = slPx)
+else if strategy.position_size < 0
+    if dir == -1 and not na(trail)
+        slPx := math.min(nz(slPx, trail), trail)
+    strategy.exit("S-TP1", "S", qty_percent = tp1Pct, limit = tp1Px, stop = slPx)
+    strategy.exit("S-TP2", "S", limit = tp2Px, stop = slPx)
+
+// flips against an open trade that the filters did not re-enter
+if barstate.isconfirmed
+    if strategy.position_size > 0 and entryDn and not sellSig
+        strategy.close("L", comment = "Trail flip")
+    if strategy.position_size < 0 and entryUp and not buySig
+        strategy.close("S", comment = "Trail flip")
+    if dormExit and regimeClose and strategy.position_size != 0
+        strategy.close_all(comment = "Dormant")
+
+// risk-based size
+f_qty(float riskDist) =>
+    float riskCash = strategy.equity * riskPct / 100.0
+    float unitRisk = riskDist * syminfo.pointvalue
+    float q  = unitRisk > 0 ? riskCash / unitRisk : 0.0
+    float qM = strategy.equity * maxLev / (close * syminfo.pointvalue)
+    math.round(math.min(q, qM) * 100.0) / 100.0
+
+if buySig
+    q = f_qty(stopDist)
+    if q > 0
+        slPx  := trail
+        tp1Px := close + stopDist * tp1R
+        tp2Px := close + stopDist * tp2R
+        strategy.entry("L", strategy.long, qty = q, comment = "Long")
+        if lblOn
+            label.new(bar_index, low, lblStop ? "BUY  " + str.tostring(trail, format.mintick) : "BUY", yloc = yloc.belowbar,
+                 style = label.style_label_up, color = UP, textcolor = #04211D, size = size.small)
+
+if sellSig
+    q = f_qty(stopDist)
+    if q > 0
+        slPx  := trail
+        tp1Px := close - stopDist * tp1R
+        tp2Px := close - stopDist * tp2R
+        strategy.entry("S", strategy.short, qty = q, comment = "Short")
+        if lblOn
+            label.new(bar_index, high, lblStop ? "SELL  " + str.tostring(trail, format.mintick) : "SELL", yloc = yloc.abovebar,
+                 style = label.style_label_down, color = DN, textcolor = #2B0716, size = size.small)
+
+// ── DRAWING ──────────────────────────────────────────────────────────────
+tCol = dir == 1 ? UP : dir == -1 ? DN : SLEEP
+
+plot(glowOn ? trail : na, "Glow", color = color.new(tCol, 82), linewidth = 5, style = plot.style_linebr)
+pTrail = plot(trail, "Trail", color = tCol, linewidth = 2, style = plot.style_linebr)
+pPrice = plot(fillOn and dir != 0 ? close : na, "Price", color = color.new(color.white, 100), style = plot.style_linebr, display = display.none)
+fill(pTrail, pPrice, color = color.new(tCol, 92), title = "Trail fill")
+
+isUp  = close >= open
+cLive = trending ? (isUp ? UP : DN) : (isUp ? SLEEP : SLEEP_D)
+plotcandle(candOn ? open : na, high, low, close, "Candles",
+     color = color.new(cLive, trending ? 22 : 30),
+     wickcolor = color.new(cLive, trending ? 25 : 20),
+     bordercolor = color.new(cLive, trending ? 0 : 12))
+
+inPos = strategy.position_size != 0
+showLv = lvlOn and inPos
+plot(showLv ? slPx  : na, "Stop", color = color.new(DN, 35),   linewidth = 1, style = plot.style_linebr)
+plot(showLv ? tp1Px : na, "TP1",  color = color.new(UP, 40),   linewidth = 1, style = plot.style_circles)
+plot(showLv ? tp2Px : na, "TP2",  color = color.new(GOLD, 40), linewidth = 1, style = plot.style_circles)
+
+// ── DASHBOARD (compact) ──────────────────────────────────────────────────
+hudP(string s) =>
+    switch s
+        "Top Right"    => position.top_right
+        "Top Left"     => position.top_left
+        "Bottom Right" => position.bottom_right
+        "Bottom Left"  => position.bottom_left
+        => position.middle_right
+
+var table hud = table.new(position.bottom_right, 2, 4)
+if showHUD and barstate.islast
+    table.delete(hud)
+    hud := table.new(hudP(hudPos), 2, 4, bgcolor = CARD, border_color = color.new(#28323F, 0), border_width = 1)
+
+    hBg  = not trending ? SLEEP_D : dir == 1 ? UP_DEEP : DN_DEEP
+    hTx  = not trending ? "DORMANT" : dir == 1 ? "LONG" : "SHORT"
+    trTx = dir == 0 ? "—" : str.tostring(trail, format.mintick)
+
+    nT   = strategy.closedtrades
+    wr   = nT > 0 ? strategy.wintrades / nT * 100.0 : na
+    pf   = strategy.grossloss > 0 ? strategy.grossprofit / strategy.grossloss : na
+    netP = strategy.netprofit
+
+    table.cell(hud, 0, 0, " " + hTx + " ", text_color = color.white, text_size = size.small, text_halign = text.align_left, bgcolor = hBg)
+    table.cell(hud, 1, 0, trTx + " ", text_color = color.white, text_size = size.small, text_halign = text.align_right, bgcolor = hBg)
+
+    table.cell(hud, 0, 1, " Net profit", text_color = MUTE, text_size = size.small, text_halign = text.align_left, bgcolor = CARD)
+    table.cell(hud, 1, 1, str.tostring(netP, "#,###") + " ", text_color = netP >= 0 ? UP : DN, text_size = size.small, text_halign = text.align_right, bgcolor = CARD)
+
+    table.cell(hud, 0, 2, " Trades · Win", text_color = MUTE, text_size = size.small, text_halign = text.align_left, bgcolor = CARD_2)
+    table.cell(hud, 1, 2, str.tostring(nT) + " · " + (na(wr) ? "—" : str.tostring(math.round(wr)) + "%") + " ", text_color = TXT, text_size = size.small, text_halign = text.align_right, bgcolor = CARD_2)
+
+    table.cell(hud, 0, 3, " PF · Max DD", text_color = MUTE, text_size = size.small, text_halign = text.align_left, bgcolor = CARD)
+    table.cell(hud, 1, 3, (na(pf) ? "—" : str.tostring(pf, "#.##")) + " · " + str.tostring(strategy.max_drawdown, "#,###") + " ", text_color = na(pf) ? MUTE : pf >= 1.3 ? UP : pf >= 1.0 ? GOLD : DN, text_size = size.small, text_halign = text.align_right, bgcolor = CARD)
