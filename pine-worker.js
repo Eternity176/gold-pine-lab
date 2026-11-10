@@ -97,9 +97,22 @@ self.onmessage = async (e) => {
   const t0 = Date.now();
   try {
     const n = msg.times.length;
+    // PineTS derives barstate.isconfirmed from each bar's closeTime
+    // (closeTime <= Date.now()). The candles we pass have no closeTime, so
+    // PineTS falls back to openTime + 1 day — on any recent window (last bar
+    // within a day of now) EVERY bar reads as unconfirmed, and any script
+    // gating on barstate.isconfirmed (e.g. the LuxAlgo clone's
+    // confirmOnClose) produces zero signals. Set closeTime = openTime +
+    // the bar's own interval: closed bars confirm, the forming bar does
+    // not — exactly TradingView's semantics. (Found 2026-11-10: the clone
+    // gave 0 signals on 1000 live bars while its raw triggers were true on
+    // 293/319 bars; isconfirmed was 0/1000 until closeTime was set.)
+    const TF_MINUTES = { '1m': 1, '5m': 5, '15m': 15, '1H': 60, '1D': 1440 };
+    const tfMs = (TF_MINUTES[msg.timeframe] || 1) * 60000;
     const candles = new Array(n);
     for (let i = 0; i < n; i++) {
-      candles[i] = { open: msg.open[i], high: msg.high[i], low: msg.low[i], close: msg.close[i], volume: 0, openTime: msg.times[i] * 60000 };
+      const openTime = msg.times[i] * 60000;
+      candles[i] = { open: msg.open[i], high: msg.high[i], low: msg.low[i], close: msg.close[i], volume: 0, openTime, closeTime: openTime + tfMs };
     }
     const pine = new PineTSLib.PineTS(candles);
     let ctx;
