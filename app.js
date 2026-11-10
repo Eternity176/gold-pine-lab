@@ -207,7 +207,7 @@
   // WORKER_VERSION: bump this whenever pine-worker.js changes. The worker is
   // created once per page load and reused, so without the ?v= query a tab
   // opened before a deploy keeps the OLD worker (stale logic) until reload.
-  const WORKER_VERSION = '20261110-closeTime';
+  const WORKER_VERSION = '20261110-trailfix';
   function getWorker() {
     if (worker) return worker;
     worker = new Worker('pine-worker.js?v=' + WORKER_VERSION);
@@ -502,6 +502,7 @@
     lux: 'strategies/samples/luxalgo-signals-overlays-clone.pine',
     hook: 'strategies/samples/wpr89-ema34-hook-arrows.pine',
     fractal: 'strategies/samples/fractal-wpr-v1.pine',
+    trail: 'strategies/samples/gold-trend-trail.pine',
   };
   async function loadSample(key) {
     try {

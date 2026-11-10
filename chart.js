@@ -256,23 +256,38 @@
       // this loop only touches the visible window, never all 1M points)
       let lo = Infinity, hi = -Infinity;
       for (let i = start; i <= dataEnd; i++) { lo = Math.min(lo, c.low[i]); hi = Math.max(hi, c.high[i]); }
+      const clo = lo, chi = hi, crange = (chi - clo) || 1;
+      // An overlay plot whose values live far from price (e.g. an
+      // oscillator plotted by an overlay=true script) must not stretch
+      // the price axis and squash the candles: include a plot in the
+      // range only if at least one visible value sits within one full
+      // price range of the candle range. The plot is still drawn, just
+      // off-screen — like TradingView. (Without this, an overlay=true
+      // strategy plotting an oscillator, e.g. R7's EMA(%R) at -100..0
+      // against $4100 gold, would flatten the candles to a line.)
+      const includeInRange = (getV) => {
+        let anyNear = false;
+        for (let i = start; i <= dataEnd; i++) {
+          const v = getV(i);
+          if (typeof v === 'number' && !Number.isNaN(v) && v >= clo - crange && v <= chi + crange) { anyNear = true; break; }
+        }
+        if (!anyNear) return;
+        for (let i = start; i <= dataEnd; i++) {
+          const v = getV(i);
+          if (typeof v === 'number' && !Number.isNaN(v)) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
+        }
+      };
       for (const key of Object.keys(this._plotVals || {})) {
         const m = this.plotMeta[key];
         if (m && m.overlay === false) continue;
         const vals = this._plotVals[key];
-        for (let i = start; i <= dataEnd; i++) {
-          const v = vals[i];
-          if (typeof v === 'number' && !Number.isNaN(v)) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
-        }
+        includeInRange((i) => vals[i]);
       }
       // built-in indicator overlays (bar-indexed, visible window only)
       for (const s of this.ind) {
         if (s.overlay === false) continue;
         const v = s.values;
-        for (let i = start; i <= dataEnd; i++) {
-          const val = v[i];
-          if (typeof val === 'number' && !Number.isNaN(val)) { lo = Math.min(lo, val); hi = Math.max(hi, val); }
-        }
+        includeInRange((i) => v[i]);
       }
       if (!isFinite(lo)) { lo = 0; hi = 1; }
       const pad = (hi - lo) * 0.06 || 1;

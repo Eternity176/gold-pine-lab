@@ -122,6 +122,19 @@ self.onmessage = async (e) => {
       candles[i] = { open: msg.open[i], high: msg.high[i], low: msg.low[i], close: msg.close[i], volume: 0, openTime, closeTime: openTime + tfMs };
     }
     const pine = new PineTSLib.PineTS(candles);
+    // Symbol info: PineTS leaves syminfo undefined when built from raw
+    // candles (no ticker/provider), so syminfo.pointvalue / mintick read
+    // as na. Any sizing math using them returns na — e.g. Gold Trend
+    // Trail's f_qty: riskCash / (stopDist * pointvalue) is na, so
+    // `if q > 0` never fires and the strategy makes no entries, no
+    // labels, no trades, while its signals fire fine. Verified
+    // 2026-11-10: pointvalue na on 20000/20000 bars, buySig fired 105x
+    // but 0 trades; setting pine._syminfo restores pointvalue=1 and
+    // mintick=0.01. XAUUSD: 1 point = $1/oz, tick $0.01.
+    const SYMINFO = {
+      XAUUSD: { pointvalue: 1, mintick: 0.01, currency: 'USD', timezone: 'UTC', tickerid: 'XAUUSD' },
+    };
+    pine._syminfo = { ...(SYMINFO[msg.symbol] || { pointvalue: 1, mintick: 0.01, currency: 'USD', timezone: 'UTC', tickerid: msg.symbol || 'XAUUSD' }) };
     let ctx;
     if (compileCache.code === msg.code && typeof compileCache.fn === 'function') {
       // Same script as the previous run — reuse the transpiled function.
@@ -149,6 +162,18 @@ self.onmessage = async (e) => {
       compileCache.inputs = ctx.inputs || {};
     }
     self.postMessage({ type: 'progress', msg: `Computing Tester metrics…` });
+    // Script-level overlay (TV semantics): PineTS reports per-plot
+    // options.overlay=false for EVERY plot of a strategy() script, even
+    // when the script declares overlay=true (verified 2026-11-10: Gold
+    // Trail and R7 both have strategy.config.overlay=true but all their
+    // plots report options.overlay=false; indicators propagate the
+    // declaration correctly). The chart puts overlay=false plots in a
+    // separate "Pine" pane, so a strategy's trail / stop / TP lines
+    // landed below the chart instead of on it. Use the script-level
+    // value PineTS parsed into its config; fall back to the per-plot
+    // value when it is not available.
+    const scriptOverlay = ctx.strategy ? (ctx.strategy.config ? ctx.strategy.config.overlay : undefined)
+      : ctx.indicator ? ctx.indicator.overlay : undefined;
     const plots = {};
     const plotMeta = {};
     for (const key of Object.keys(ctx.plots || {})) {
@@ -161,7 +186,7 @@ self.onmessage = async (e) => {
       const isBoolPlot = data.some((d) => d.value === true || d.value === false);
       const plotData = isBoolPlot ? data.filter((d) => d.value === true) : data;
       plots[key] = downsamplePlot(plotData, MAX_PLOT_POINTS);
-      plotMeta[key] = { title: p.title || key, overlay: p.options ? p.options.overlay !== false : true, color: p.options && p.options.color, style: p.options && p.options.style, ...seriesStats(data) };
+      plotMeta[key] = { title: p.title || key, overlay: (typeof scriptOverlay === 'boolean') ? scriptOverlay : (p.options ? p.options.overlay !== false : true), color: p.options && p.options.color, style: p.options && p.options.style, ...seriesStats(data) };
     }
     // Drawings: PineTS keeps only the FINAL active set (single-entry series).
     const draw = (k) => {
