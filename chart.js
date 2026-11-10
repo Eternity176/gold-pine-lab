@@ -23,6 +23,12 @@
       this.labels = []; this.lines = []; this.boxes = []; this.trades = [];
       this.ind = []; // built-in indicator series: [{key,label,overlay,pane,color,style,values,levels}]
       this.endIdx = 0; this.barW = 0; this.viewBars = 300;
+      this.barOffset = 0; // index in the full candle series where the last
+      // run's window starts (0 = full history). PineTS reports label /
+      // line / box positions and trade entry_bar_index as bar indices
+      // RELATIVE to the run window (a 20k preview's bar 0 is the full
+      // series' bar n-20000); without this offset they all pile up at the
+      // left edge of the chart. Set by app.js via setData opts.
       this.mouse = null; this.onHover = null; this.type = 'candles';
       // Right offset (bars of empty space after the last candle, like
       // TradingView): the last candle never sits jammed against the price
@@ -149,6 +155,7 @@
       const keep = opts && opts.preserveView && this.candles;
       const oldEnd = this.endIdx, oldN = this.candles ? this.candles.n : 0;
       this.candles = candles; this.plots = plots || {}; this.plotMeta = plotMeta || {};
+      this.barOffset = (opts && opts.barOffset) || 0;
       this.labels = (drawings && drawings.labels) || [];
       this.lines = (drawings && drawings.lines) || [];
       this.boxes = (drawings && drawings.boxes) || [];
@@ -486,7 +493,7 @@
       }
       // trade markers
       for (const tr of this.trades) {
-        const bi = tr.entry_bar_index;
+        const bi = tr.entry_bar_index + this.barOffset;
         if (bi < start || bi > end) continue;
         const x = xOf(bi);
         const long = tr.dir > 0;
@@ -547,7 +554,7 @@
         const bi = this._barIndexOfTime(x);
         return bi === null ? null : this._xAtIdx(bi);
       }
-      return this._xAtIdx(x); // bar_index
+      return this._xAtIdx(x + this.barOffset); // bar_index (window-relative — see barOffset)
     }
     _drawOsc(start, end) {
       if (!this.osc) return;

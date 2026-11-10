@@ -11,6 +11,9 @@
     result: null, worker: null, running: false, chartType: 'candles',
     maxBars: 20000, // preview default: last 20k bars (fast). 0 = all (Run full).
     liveOn: false, liveTimer: null, pendingPreview: true, runTimer: null, runStartedAt: 0,
+    barOffset: 0, // index in state.candles where the last run's window starts
+    // (preview: n - maxBars; full run: 0). The chart adds it to PineTS's
+    // window-relative bar indices (labels, lines, boxes, trade entries).
   };
 
   let chart = null;
@@ -39,9 +42,9 @@
     state.candles = currentCandles();
     const r = state.result;
     if (r) {
-      chart.setData(state.candles, r.plots, r.plotMeta, { labels: r.labels, lines: r.lines, boxes: r.boxes }, r.trades || [], { preserveView: !!preserveView });
+      chart.setData(state.candles, r.plots, r.plotMeta, { labels: r.labels, lines: r.lines, boxes: r.boxes }, r.trades || [], { preserveView: !!preserveView, barOffset: state.barOffset });
     } else {
-      chart.setData(state.candles, {}, {}, {}, [], { preserveView: !!preserveView });
+      chart.setData(state.candles, {}, {}, {}, [], { preserveView: !!preserveView, barOffset: state.barOffset });
     }
     // Built-in indicators: recomputed on the current timeframe series, drawn
     // as bar-indexed series alongside the Pine plots.
@@ -279,7 +282,7 @@
   }
 
   // full=false: preview = last `maxBars` bars (default 20k, ~1–2s).
-  // full=true:  entire history (1,008,574 bars, ~45–55s) — Tester numbers.
+  // full=true:  entire history (1,008,574 bars, minutes for heavy scripts) — Tester numbers.
   function runScript(full) {
     if (state.running) { cancelRun(); return; } // Run button doubles as Cancel
     if (!state.m1) { showConsoleError('Data not loaded yet.'); return; }
@@ -292,6 +295,7 @@
     state.pendingPreview = !full && maxBars > 0 && maxBars < n;
     if (state.pendingPreview) {
       const s = n - maxBars;
+      state.barOffset = s; // preview window starts at full-series bar s
       const sliced = {
         n: maxBars,
         times: candles.times.slice(s), open: candles.open.slice(s),
@@ -299,6 +303,7 @@
       };
       return sendRun(code, sliced);
     }
+    state.barOffset = 0; // full run covers the whole series
     sendRun(code, candles);
   }
   function sendRun(code, candles) {
