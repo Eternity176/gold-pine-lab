@@ -210,7 +210,7 @@
   // WORKER_VERSION: bump this whenever pine-worker.js changes. The worker is
   // created once per page load and reused, so without the ?v= query a tab
   // opened before a deploy keeps the OLD worker (stale logic) until reload.
-  const WORKER_VERSION = '20261110-trailfix';
+  const WORKER_VERSION = '20261110-mtf-provider';
   function getWorker() {
     if (worker) return worker;
     worker = new Worker('pine-worker.js?v=' + WORKER_VERSION);

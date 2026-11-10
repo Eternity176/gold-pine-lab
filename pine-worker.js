@@ -51,6 +51,77 @@
 
 importScripts('vendor/pinets.min.browser.js', 'tester.js');
 
+// --- Local market-data provider (MTF) --------------------------------------
+// PineTS `request.security` needs a ticker + a chart timeframe, and builds
+// its secondary (HTF) contexts from the parent's data source. Built from a
+// raw candle array, PineTS has neither — security throws
+// "Invalid value of the 'timeframe' argument ('undefined')" — and even with
+// the constructor fixed, HTF security returns the chart bars 1:1 (no
+// resampling in PineTS 0.13.1 for array sources), so any H1-dependent
+// strategy silently makes 0 trades.
+// Fix: hand PineTS an IProvider that serves every timeframe by aggregating
+// the chart bars on the UTC calendar grid. Aggregation is byte-identical to
+// PineTS's own aggregateCandles (verified in Node on the full 1,008,574-bar
+// XAUUSD M1 history for 15m/60/240/1D). The browser bundle does not export
+// aggregateCandles, hence the hand-rolled version here;
+// tools/run_platform.mjs uses the lib one — same result, verified.
+// Base bars are whatever timeframe the chart sends (usually M1); targets
+// finer than the base fall back to the base bars (TV forbids plain security
+// to a lower TF — use request.security_lower_tf for that).
+function parseTfMinutes(tf) {
+  const s = String(tf);
+  let m = s.match(/^(\d+)$/); if (m) return parseInt(m[1], 10);
+  m = s.match(/^(\d+)m$/i); if (m) return parseInt(m[1], 10);
+  m = s.match(/^(\d+)H$/i); if (m) return parseInt(m[1], 10) * 60;
+  m = s.match(/^(\d+)D$/i); if (m) return parseInt(m[1], 10) * 1440;
+  m = s.match(/^(\d+)W$/i); if (m) return parseInt(m[1], 10) * 10080;
+  return 1;
+}
+function bucketStart(openTime, mins) {
+  if (mins >= 10080) { // weekly: Monday 00:00 UTC
+    const d = new Date(openTime);
+    const day = (d.getUTCDay() + 6) % 7; // Mon=0
+    return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - day);
+  }
+  return Math.floor(openTime / (mins * 60000)) * (mins * 60000);
+}
+function aggregateLocal(base, targetTf, baseMins) {
+  const mins = parseTfMinutes(targetTf);
+  if (mins <= baseMins) return base;
+  const out = [];
+  let cur = null;
+  for (const k of base) {
+    const start = bucketStart(k.openTime, mins);
+    if (!cur || cur.openTime !== start) {
+      cur = { openTime: start, open: k.open, high: k.high, low: k.low, close: k.close, volume: k.volume || 0, closeTime: start + mins * 60000, quoteAssetVolume: 0, numberOfTrades: 0, takerBuyBaseAssetVolume: 0, takerBuyQuoteAssetVolume: 0, ignore: 0 };
+      out.push(cur);
+    } else {
+      if (k.high > cur.high) cur.high = k.high;
+      if (k.low < cur.low) cur.low = k.low;
+      cur.close = k.close;
+      cur.volume += k.volume || 0;
+    }
+  }
+  return out;
+}
+function makeLocalProvider(baseCandles, symbol, baseMins) {
+  const cache = new Map();
+  const syminfo = { pointvalue: 1, mintick: 0.01, currency: 'USD', timezone: 'UTC', tickerid: symbol, ticker: symbol, description: symbol, type: 'commodity', basecurrency: 'USD', country: 'US', pricescale: 100, minmove: 1, session: '24x7' };
+  return {
+    getMarketData: async (tickerId, timeframe, limit, sDate, eDate) => {
+      const key = String(timeframe);
+      if (!cache.has(key)) cache.set(key, aggregateLocal(baseCandles, key, baseMins));
+      let bars = cache.get(key);
+      if (sDate != null) bars = bars.filter((b) => b.openTime >= sDate);
+      if (eDate != null) bars = bars.filter((b) => b.openTime <= eDate);
+      if (limit != null && bars.length > limit) bars = bars.slice(bars.length - limit);
+      return bars;
+    },
+    getSymbolInfo: async (tickerId) => ({ ...syminfo }),
+    configure: () => {},
+  };
+}
+
 // Compiled-script cache: { code, fn, inputs }. Keyed by exact source text.
 const compileCache = { code: null, fn: null, inputs: null };
 
@@ -119,9 +190,15 @@ self.onmessage = async (e) => {
     const candles = new Array(n);
     for (let i = 0; i < n; i++) {
       const openTime = msg.times[i] * 60000;
-      candles[i] = { open: msg.open[i], high: msg.high[i], low: msg.low[i], close: msg.close[i], volume: 0, openTime, closeTime: openTime + tfMs };
+      candles[i] = { open: msg.open[i], high: msg.high[i], low: msg.low[i], close: msg.close[i], volume: 0, openTime, closeTime: openTime + tfMs, quoteAssetVolume: 0, numberOfTrades: 0, takerBuyBaseAssetVolume: 0, takerBuyQuoteAssetVolume: 0, ignore: 0 };
     }
-    const pine = new PineTSLib.PineTS(candles);
+    // MTF: give PineTS a provider (ticker + chart TF) instead of a raw array,
+    // so request.security resolves HTF bars by real aggregation (see above).
+    // Plain `new PineTS(candles)` leaves ticker/timeframe undefined and every
+    // security call throws; even fixed, HTF security returns chart bars 1:1.
+    const baseMins = parseTfMinutes(msg.timeframe) || 1;
+    const provider = makeLocalProvider(candles, msg.symbol || 'XAUUSD', baseMins);
+    const pine = new PineTSLib.PineTS(provider, msg.symbol || 'XAUUSD', msg.timeframe);
     // Symbol info: PineTS leaves syminfo undefined when built from raw
     // candles (no ticker/provider), so syminfo.pointvalue / mintick read
     // as na. Any sizing math using them returns na — e.g. Gold Trend
